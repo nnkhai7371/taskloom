@@ -2,7 +2,13 @@
  * Taskloom – task-based structured concurrency for Node.js
  * @module
  */
-export { runTask, type Task, type TaskStatus, type RunTaskOptions } from "./task.js";
+export {
+  runTask,
+  type Task,
+  type TaskStatus,
+  type RunTaskOptions,
+  type TaskLifecycleHook,
+} from "./task.js";
 export {
   runInScope,
   withStrictCancellation,

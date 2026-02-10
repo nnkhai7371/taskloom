@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { runTask } from "taskloom";
+import { runTask, type Task, type TaskLifecycleHook } from "taskloom";
 
 describe("Task lifecycle", () => {
   it("moves to completed when work resolves", async () => {
@@ -155,5 +155,117 @@ describe("Task await", () => {
     );
     controller.abort();
     await expect(task).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("Task lifecycle hooks", () => {
+  it("invokes onTaskStart, onTaskComplete with duration on success", async () => {
+    const onTaskStart = vi.fn<(task: Task) => void>();
+    const onTaskComplete = vi.fn<(task: Task, duration: number) => void>();
+    const task = runTask(async () => "ok", {
+      lifecycleHooks: { onTaskStart, onTaskComplete },
+    });
+    expect(onTaskStart).toHaveBeenCalledTimes(1);
+    expect(onTaskStart).toHaveBeenCalledWith(task);
+    const value = await task;
+    expect(value).toBe("ok");
+    expect(onTaskComplete).toHaveBeenCalledTimes(1);
+    expect(onTaskComplete).toHaveBeenCalledWith(task, expect.any(Number));
+    expect((onTaskComplete.mock.calls[0] as [Task, number])[1]).toBeGreaterThanOrEqual(0);
+  });
+
+  it("invokes onTaskFail with error and duration on reject", async () => {
+    const err = new Error("work failed");
+    const onTaskStart = vi.fn<(task: Task) => void>();
+    const onTaskFail = vi.fn<(task: Task, error: unknown, duration: number) => void>();
+    const task = runTask(
+      async () => {
+        throw err;
+      },
+      { lifecycleHooks: { onTaskStart, onTaskFail } },
+    );
+    expect(onTaskStart).toHaveBeenCalledTimes(1);
+    await expect(task).rejects.toThrow("work failed");
+    expect(onTaskFail).toHaveBeenCalledTimes(1);
+    expect(onTaskFail).toHaveBeenCalledWith(task, err, expect.any(Number));
+    expect((onTaskFail.mock.calls[0] as [Task, unknown, number])[2]).toBeGreaterThanOrEqual(0);
+  });
+
+  it("invokes onTaskCancel with reason when AbortSignal aborts", async () => {
+    const controller = new AbortController();
+    const reason = "user-abort";
+    const onTaskStart = vi.fn<(task: Task) => void>();
+    const onTaskCancel = vi.fn<(task: Task, reason: unknown) => void>();
+    const task = runTask(
+      async (signal) => {
+        await new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      {
+        signal: controller.signal,
+        lifecycleHooks: { onTaskStart, onTaskCancel },
+      },
+    );
+    expect(onTaskStart).toHaveBeenCalledTimes(1);
+    controller.abort(reason);
+    await task.then(undefined, () => {});
+    expect(onTaskCancel).toHaveBeenCalledTimes(1);
+    expect(onTaskCancel).toHaveBeenCalledWith(task, reason);
+  });
+
+  it("hook that throws does not change task result (resolve)", async () => {
+    const task = runTask(async () => 42, {
+      lifecycleHooks: {
+        onTaskComplete() {
+          throw new Error("hook threw");
+        },
+      },
+    });
+    const value = await task;
+    expect(value).toBe(42);
+  });
+
+  it("hook that throws does not change task result (reject)", async () => {
+    const err = new Error("work failed");
+    const task = runTask(
+      async () => {
+        throw err;
+      },
+      {
+        lifecycleHooks: {
+          onTaskFail() {
+            throw new Error("hook threw");
+          },
+        },
+      },
+    );
+    await expect(task).rejects.toBe(err);
+  });
+
+  it("multiple hooks (array) are all invoked in order at each lifecycle point", async () => {
+    const order: string[] = [];
+    const hook1: TaskLifecycleHook = {
+      onTaskStart(t) {
+        order.push("1-start");
+      },
+      onTaskComplete(t, d) {
+        order.push("1-complete");
+      },
+    };
+    const hook2: TaskLifecycleHook = {
+      onTaskStart(t) {
+        order.push("2-start");
+      },
+      onTaskComplete(t, d) {
+        order.push("2-complete");
+      },
+    };
+    const task = runTask(async () => "done", {
+      lifecycleHooks: [hook1, hook2],
+    });
+    expect(order).toEqual(["1-start", "2-start"]);
+    await task;
+    expect(order).toEqual(["1-start", "2-start", "1-complete", "2-complete"]);
   });
 });

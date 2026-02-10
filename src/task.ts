@@ -7,6 +7,22 @@ import { registerTask, updateTask } from "./debug.js";
 import { hasCurrentScope, registerScopeTask } from "./scope.js";
 import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
 
+/**
+ * Optional callbacks invoked at task lifecycle points. All callbacks are optional.
+ * Used for observability (e.g. metrics, APM). Hook errors are swallowed and do not affect task outcome.
+ * @see {@link RunTaskOptions.lifecycleHooks}
+ */
+export type TaskLifecycleHook = {
+  /** Called once when the task begins running (before work runs). */
+  onTaskStart?(task: Task): void;
+  /** Called once when the task completes successfully. Duration is in milliseconds since task start. */
+  onTaskComplete?(task: Task, duration: number): void;
+  /** Called once when the task fails. Duration is in milliseconds since task start. */
+  onTaskFail?(task: Task, error: unknown, duration: number): void;
+  /** Called once when the task is canceled. Reason is the cancellation reason (e.g. AbortSignal.reason). */
+  onTaskCancel?(task: Task, reason: unknown): void;
+};
+
 /** Lifecycle state of a Task: created, running, completed, failed, or canceled. */
 export type TaskStatus =
   | "created"
@@ -29,10 +45,15 @@ export type Task<T = unknown> = {
   onCancel(handler: (reason?: unknown) => void): void;
 } & PromiseLike<T>;
 
-/** Options for runTask: optional parent AbortSignal for cancellation, optional name for debug. */
+/**
+ * Options for runTask: optional parent AbortSignal for cancellation, optional name for debug,
+ * optional lifecycle hooks for observability.
+ */
 export type RunTaskOptions = {
   signal?: AbortSignal;
   name?: string;
+  /** Optional lifecycle hooks (single or array). Invoked at task start, complete, fail, and cancel. */
+  lifecycleHooks?: TaskLifecycleHook | TaskLifecycleHook[];
 };
 
 /**
@@ -56,6 +77,12 @@ export function runTask<T>(
   const signal = controller.signal;
   const taskName = options?.name;
   const debugTaskId = registerTask(taskName);
+  const hooks: TaskLifecycleHook[] =
+    options?.lifecycleHooks != null
+      ? Array.isArray(options.lifecycleHooks)
+        ? options.lifecycleHooks
+        : [options.lifecycleHooks]
+      : [];
 
   let status: TaskStatus = "running";
   let result: T | undefined;
@@ -67,6 +94,8 @@ export function runTask<T>(
     resolveThenable = resolve;
     rejectThenable = reject;
   });
+  let startTime = 0;
+  let taskObject!: Task<T>;
 
   function withName(reason: unknown): unknown {
     if (taskName != null && reason !== null && typeof reason === "object") {
@@ -77,6 +106,13 @@ export function runTask<T>(
 
   function transitionToCanceled(reason: unknown): void {
     if (status !== "running") return;
+    for (const h of hooks) {
+      try {
+        h.onTaskCancel?.(taskObject, reason);
+      } catch {
+        // Hook errors do not affect task outcome
+      }
+    }
     status = "canceled";
     updateTask(debugTaskId, "canceled");
     error = reason;
@@ -98,6 +134,14 @@ export function runTask<T>(
 
   function transitionToCompleted(value: T): void {
     if (status !== "running") return;
+    const duration = performance.now() - startTime;
+    for (const h of hooks) {
+      try {
+        h.onTaskComplete?.(taskObject, duration);
+      } catch {
+        // Hook errors do not affect task outcome
+      }
+    }
     status = "completed";
     updateTask(debugTaskId, "completed");
     result = value;
@@ -106,6 +150,14 @@ export function runTask<T>(
 
   function transitionToFailed(reason: unknown): void {
     if (status !== "running") return;
+    const duration = performance.now() - startTime;
+    for (const h of hooks) {
+      try {
+        h.onTaskFail?.(taskObject, reason, duration);
+      } catch {
+        // Hook errors do not affect task outcome
+      }
+    }
     status = "failed";
     updateTask(debugTaskId, "failed");
     error = reason;
@@ -115,26 +167,6 @@ export function runTask<T>(
   signal.addEventListener("abort", () => {
     transitionToCanceled(signal.reason);
   });
-
-  let workPromise: Promise<unknown> | undefined;
-  if (options?.signal) {
-    if (options.signal.aborted) {
-      transitionToCanceled(options.signal.reason);
-      workPromise = undefined;
-      const obj = makeTaskObject();
-      registerScopeTask(options?.signal, obj, workPromise);
-      return obj;
-    }
-    const parentSignal = options.signal;
-    parentSignal.addEventListener("abort", () => {
-      controller.abort(parentSignal.reason);
-    });
-  }
-
-  workPromise = work(signal).then(
-    (value) => transitionToCompleted(value),
-    (reason) => transitionToFailed(reason),
-  );
 
   function makeTaskObject(): Task<T> {
     const taskObject: Task<T> = {
@@ -171,7 +203,41 @@ export function runTask<T>(
     return taskObject;
   }
 
-  const obj = makeTaskObject();
-  registerScopeTask(options?.signal, obj, workPromise);
-  return obj;
+  let workPromise: Promise<unknown> | undefined;
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      taskObject = makeTaskObject();
+      workPromise = undefined;
+      for (const h of hooks) {
+        try {
+          h.onTaskCancel?.(taskObject, options.signal.reason);
+        } catch {
+          // Hook errors do not affect task outcome
+        }
+      }
+      transitionToCanceled(options.signal.reason);
+      registerScopeTask(options?.signal, taskObject, workPromise);
+      return taskObject;
+    }
+    const parentSignal = options.signal;
+    parentSignal.addEventListener("abort", () => {
+      controller.abort(parentSignal.reason);
+    });
+  }
+
+  startTime = performance.now();
+  taskObject = makeTaskObject();
+  for (const h of hooks) {
+    try {
+      h.onTaskStart?.(taskObject);
+    } catch {
+      // Hook errors do not affect task outcome
+    }
+  }
+  workPromise = work(signal).then(
+    (value) => transitionToCompleted(value),
+    (reason) => transitionToFailed(reason),
+  );
+  registerScopeTask(options?.signal, taskObject, workPromise);
+  return taskObject;
 }
