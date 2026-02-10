@@ -1,8 +1,29 @@
 {
   "name": "taskloom",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Task-based structured concurrency primitives for Node.js and browser",
   "type": "module",
+  "author": "nnkhai7371 <nnkhai7371@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nnkhai7371/taskloom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nnkhai7371/taskloom/issues"
+  },
+  "homepage": "https://github.com/nnkhai7371/taskloom#readme",
+  "keywords": [
+    "concurrency",
+    "async",
+    "structured-concurrency",
+    "abort-signal",
+    "cancellation",
+    "tasks",
+    "scope",
+    "parallel",
+    "nodejs"
+  ],
   "engines": {
     "node": ">=22"
   },
