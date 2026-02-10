@@ -5,6 +5,21 @@
 
 import type { TaskStatus } from "./task.js";
 
+/**
+ * Pluggable logger for task-debug output. Implement this interface and pass
+ * to enableTaskDebug(logger) to route lifecycle and default visualizer
+ * output to your logger (e.g. debug for tree output, error for subscriber
+ * throw reporting). Optional meta supports structured loggers.
+ */
+export interface Logger {
+  /** Log at debug level (e.g. lifecycle and default visualizer output). */
+  debug(msg: string, meta?: object): void;
+  /** Log at warn level. */
+  warn(msg: string, meta?: object): void;
+  /** Log at error level (e.g. subscriber-throw reporting). */
+  error(msg: string, meta?: object): void;
+}
+
 /** Event payload for realtime task debug (discriminated union). */
 export type TaskDebugEvent =
   | { kind: "scopeOpened"; scopeId: number; type: ScopeType }
@@ -56,6 +71,7 @@ type ScopeNode = {
  */
 export class TaskloomDebugger {
   #debugEnabled = false;
+  #logger: Logger | null = null;
   #subscribers: TaskDebugSubscriber[] | null = null;
   #nextScopeId = 0;
   #nextTaskId = 0;
@@ -68,12 +84,33 @@ export class TaskloomDebugger {
   #defaultVisualizerUnsubscribe: (() => void) | null = null;
   #hasDefaultVisualizer = false;
 
+  #sink(level: "debug" | "warn" | "error", msg: string, meta?: object): void {
+    const logger = this.#logger;
+    if (logger) {
+      try {
+        logger[level](msg, meta);
+        return;
+      } catch {
+        // Fall back to console if logger throws
+      }
+    }
+    if (level === "debug") {
+      // eslint-disable-next-line no-console
+      console.log(msg);
+    } else if (level === "warn") {
+      // eslint-disable-next-line no-console
+      console.warn(msg);
+    } else {
+      // eslint-disable-next-line no-console
+      console.error(msg);
+    }
+  }
+
   #printCompletedScope(scope: MirrorScope): void {
     if (this.#printedRootIds.has(scope.id)) return;
     const text = this.#formatMirrorTree(scope);
     if (text) {
-      // eslint-disable-next-line no-console
-      console.log(text);
+      this.#sink("debug", text);
       this.#printedRootIds.add(scope.id);
     }
   }
@@ -179,8 +216,7 @@ export class TaskloomDebugger {
       try {
         fn(event);
       } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[taskloom] subscribeTaskDebug subscriber threw:", err);
+        this.#sink("error", "[taskloom] subscribeTaskDebug subscriber threw:", { error: err });
       }
     }
   }
@@ -230,7 +266,8 @@ export class TaskloomDebugger {
     return this.#scopeStack.at(-1);
   }
 
-  enable(): void {
+  enable(logger?: Logger): void {
+    this.#logger = logger ?? null;
     this.#debugEnabled = true;
     if (!this.#defaultVisualizerUnsubscribe) {
       this.#defaultVisualizerUnsubscribe = this.subscribe(this.#defaultInPlaceVisualizer.bind(this));
@@ -303,8 +340,7 @@ export class TaskloomDebugger {
       if (!this.#hasDefaultVisualizer) {
         const text = this.#formatTree(node);
         if (text) {
-          // eslint-disable-next-line no-console
-          console.log(text);
+          this.#sink("debug", text);
         }
       }
       this.#clearTaskIdsFromTree(node);
@@ -363,8 +399,16 @@ const defaultDebugger = new TaskloomDebugger();
  */
 export const taskloomDebugger = defaultDebugger;
 
-export function enableTaskDebug(): void {
-  defaultDebugger.enable();
+/**
+ * Enables task-tree introspection for the default debugger. Lifecycle and
+ * default visualizer output go to console unless a logger is supplied.
+ * When a Logger is provided, all task-debug output (lifecycle lines and
+ * subscriber-throw reporting) is sent via that logger instead of console.
+ * @param logger - Optional logger; when provided, task-debug output uses
+ *   logger.debug / logger.error instead of console.
+ */
+export function enableTaskDebug(logger?: Logger): void {
+  defaultDebugger.enable(logger);
 }
 
 /** Internal use for tests only; not part of public API. */

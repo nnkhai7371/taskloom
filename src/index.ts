@@ -30,6 +30,7 @@ export {
   subscribeTaskDebug,
   TaskloomDebugger,
   taskloomDebugger,
+  type Logger,
   type TaskDebugEvent,
   type ScopeType,
 } from "./debug.js";

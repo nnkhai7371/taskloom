@@ -3,7 +3,13 @@
  * with scope/task nodes, IDs, names; zero-cost when disabled.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { sync, enableTaskDebug, subscribeTaskDebug, taskloomDebugger } from "taskloom";
+import {
+  sync,
+  enableTaskDebug,
+  subscribeTaskDebug,
+  taskloomDebugger,
+  type Logger,
+} from "taskloom";
 // Internal hook for tests only (not from barrel)
 import { disableTaskDebug } from "../src/debug.js";
 
@@ -189,6 +195,54 @@ describe("subscribeTaskDebug", () => {
     expect(received).toContain("taskUpdated");
     expect(received).toContain("scopeClosed");
     expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+});
+
+describe("enableTaskDebug(logger) routes output to logger", () => {
+  it("lifecycle and default visualizer output go to logger.debug when logger supplied", async () => {
+    const logger: Logger = {
+      debug: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    enableTaskDebug(logger);
+    await sync(async ({ task }) => {
+      await task(async () => 1);
+      await task(async () => 2);
+    });
+    expect(logger.debug).toHaveBeenCalled();
+    const debugCalls = (logger.debug as ReturnType<typeof vi.fn>).mock.calls;
+    const treeOutput = debugCalls.find(
+      (args: unknown[]) =>
+        args.length > 0 &&
+        typeof args[0] === "string" &&
+        (args[0].startsWith("sync#") || args[0].includes("task#")),
+    );
+    expect(treeOutput).toBeDefined();
+    expect(treeOutput![0]).toMatch(/sync#\d+/);
+    expect(treeOutput![0]).toMatch(/task#\d+/);
+  });
+
+  it("when subscriber throws and logger was supplied, error is reported via logger.error not console", async () => {
+    const logger: Logger = {
+      debug: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    enableTaskDebug(logger);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    subscribeTaskDebug(() => {
+      throw new Error("subscriber throw");
+    });
+    await sync(async ({ run }) => {
+      run(async () => 1);
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      "[taskloom] subscribeTaskDebug subscriber threw:",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    expect(errSpy).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 });
