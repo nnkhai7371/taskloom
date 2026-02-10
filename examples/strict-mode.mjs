@@ -1,22 +1,29 @@
 /**
- * Strict mode — enableStrictMode() warns about unstructured async, orphans, etc.
- * Use onWarn to capture warnings. Import from package entry only.
+ * Strict mode — enableStrictMode() throws StrictModeError when misuse is detected.
+ * Use onWarn to capture the message before the throw. Import from package entry only.
  */
-import { enableStrictMode, spawn } from "taskloom";
+import { enableStrictMode, StrictModeError, runTask, runInScope } from "taskloom";
 
-const warnings = [];
+const captured = [];
 enableStrictMode({
   onWarn(message) {
-    warnings.push(message);
+    captured.push(message);
     console.log("[strict]", message);
   },
 });
 
-// Starting a task outside any scope (e.g. spawn at top level) triggers
-// a strict-mode warning when strict mode is enabled.
-const task = spawn(async () => {
-  return "done";
+// runTask outside any scope throws when strict mode is enabled.
+try {
+  runTask(async () => "done");
+} catch (err) {
+  if (err instanceof StrictModeError) {
+    console.log("Caught StrictModeError:", err.message);
+  }
+}
+console.log("captured:", captured.length);
+
+// Correct usage: run inside a scope (no throw).
+const value = await runInScope(async (scope) => {
+  return await runTask(async () => "done", { signal: scope.signal });
 });
-const value = await task;
 console.log("task result:", value);
-console.log("warnings captured:", warnings.length);
