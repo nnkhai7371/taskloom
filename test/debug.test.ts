@@ -3,7 +3,7 @@
  * with scope/task nodes, IDs, names; zero-cost when disabled.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { sync, enableTaskDebug, subscribeTaskDebug } from "taskloom";
+import { sync, enableTaskDebug, subscribeTaskDebug, taskloomDebugger } from "taskloom";
 // Internal hook for tests only (not from barrel)
 import { disableTaskDebug } from "../src/debug.js";
 
@@ -110,6 +110,22 @@ describe("zero-friction sync when debug not enabled", () => {
 describe("enableTaskDebug public API", () => {
   it("is importable from taskloom barrel", () => {
     expect(typeof enableTaskDebug).toBe("function");
+  });
+});
+
+describe("public API uses default instance", () => {
+  it("enableTaskDebug() enables the default singleton and subscribe receives events", async () => {
+    expect(taskloomDebugger.isEnabled()).toBe(false);
+    enableTaskDebug();
+    expect(taskloomDebugger.isEnabled()).toBe(true);
+    const events: Array<{ kind: string }> = [];
+    subscribeTaskDebug((e) => events.push({ kind: e.kind }));
+    await sync(async ({ task }) => {
+      await task(async () => 1);
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.map((e) => e.kind)).toContain("scopeOpened");
+    expect(events.map((e) => e.kind)).toContain("taskUpdated");
   });
 });
 

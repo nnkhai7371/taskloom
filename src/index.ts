@@ -28,7 +28,10 @@ export {
 export {
   enableTaskDebug,
   subscribeTaskDebug,
+  TaskloomDebugger,
+  taskloomDebugger,
   type TaskDebugEvent,
+  type ScopeType,
 } from "./debug.js";
 export {
   enableStrictMode,
