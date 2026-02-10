@@ -2,6 +2,12 @@
  * Opinionated dev helpers: sleep, timeout, retry. Use only Node built-ins; respect AbortSignal and scope.
  */
 
+import {
+  getCurrentScopeStorage,
+  getScopeDeadlineRemainingMs,
+  runWithScopeStorage,
+} from "./scope.js";
+
 /**
  * Scope-bound delay: resolves after `ms` ms or rejects if the scope's signal aborts first.
  * Timer is cleared on abort to avoid leaks. Use with the current scope's AbortSignal.
@@ -42,8 +48,10 @@ export function createSleep(signal: AbortSignal): (ms: number) => Promise<void> 
 export type ScopeLike = { readonly signal: AbortSignal; abort(): void };
 
 /**
- * Runs async work with a time limit. If work completes within `ms`, returns its result.
+ * Runs async work with a time limit. If work completes within the effective limit, returns its result.
  * If the limit elapses first, aborts the scope (canceling all scope-bound children) and rejects with a TimeoutError.
+ * When the current scope has a deadline (timeout budget), the effective limit is min(ms, remainingMs).
+ * When entering work, the scope storage's deadline is set to Date.now() + effectiveMs so nested task.timeout and primitives see the capped budget.
  * Timer is always cleared (on completion, timeout, or signal abort) to avoid leaking the sleep listener.
  * @param ms - Time limit in milliseconds
  * @param work - Async work to run
@@ -57,7 +65,13 @@ export async function runWithTimeout<T>(
   scope: ScopeLike,
   signal: AbortSignal,
 ): Promise<T> {
-  const timeoutError = new Error(`Timeout after ${ms} ms`);
+  const remainingMs = getScopeDeadlineRemainingMs();
+  const effectiveMs =
+    remainingMs != null
+      ? Math.min(ms, Math.max(0, remainingMs))
+      : ms;
+
+  const timeoutError = new Error(`Timeout after ${effectiveMs} ms`);
   (timeoutError as { name?: string }).name = "TimeoutError";
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined = undefined;
@@ -65,7 +79,7 @@ export async function runWithTimeout<T>(
     timeoutId = setTimeout(() => {
       scope.abort();
       reject(timeoutError);
-    }, ms);
+    }, effectiveMs);
   });
 
   const onAbort = (): void => {
@@ -73,8 +87,17 @@ export async function runWithTimeout<T>(
   };
   signal.addEventListener("abort", onAbort);
 
+  const runWork = (): Promise<T> => {
+    const store = getCurrentScopeStorage();
+    if (store != null) {
+      const deadlineMs = Date.now() + effectiveMs;
+      return runWithScopeStorage({ ...store, deadlineMs }, work);
+    }
+    return work();
+  };
+
   try {
-    return await Promise.race([work(), timeoutPromise]);
+    return await Promise.race([runWork(), timeoutPromise]);
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
     signal.removeEventListener("abort", onAbort);

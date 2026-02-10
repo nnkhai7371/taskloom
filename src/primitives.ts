@@ -6,6 +6,7 @@
 import { runTask, type Task } from "./task.js";
 import {
   getCurrentScope,
+  getCurrentScopeStorage,
   runInScope,
   runWithScopeStorage,
   warnOrphanTasksIfStrict,
@@ -208,7 +209,12 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
         );
       }
       const entries: ScopeStorage["entries"] = [];
-      const store: ScopeStorage = { scope, entries };
+      const parentStore = getCurrentScopeStorage();
+      const store: ScopeStorage = {
+        scope,
+        entries,
+        ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+      };
       const { tasks, ctx } = createSyncContext(scope);
       return await runWithScopeStorage(store, async () => {
         await callback(ctx);
@@ -303,7 +309,12 @@ export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<v
     { once: true },
   );
   const entries: ScopeStorage["entries"] = [];
-  const store: ScopeStorage = { scope, entries };
+  const parentStore = getCurrentScopeStorage();
+  const store: ScopeStorage = {
+    scope,
+    entries,
+    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+  };
   return runWithScopeStorage(store, () => {
     pushScope("branch");
     try {

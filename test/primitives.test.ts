@@ -968,6 +968,43 @@ describe("task.timeout", () => {
     ).rejects.toMatchObject({ name: /TimeoutError|AbortError/ });
     expect(childTask!.status).toBe("canceled");
   });
+
+  it("nested task.timeout: inner requested 200ms is capped by parent remaining ~50ms and rejects on timeout", async () => {
+    await expect(
+      sync(async ({ task }) => {
+        await task.timeout(100, async () => {
+          await new Promise((r) => setTimeout(r, 50));
+          await task.timeout(200, async () => {
+            await new Promise((r) => setTimeout(r, 200));
+            return 1;
+          });
+        });
+      }),
+    ).rejects.toMatchObject({ message: /Timeout after \d+ ms/, name: "TimeoutError" });
+  });
+
+  it("parent timeout(60): child task.timeout(30, work) gets full 30ms and resolves", async () => {
+    const result = await sync(async ({ task }) => {
+      return await task.timeout(60, async () => {
+        return await task.timeout(30, async () => {
+          await new Promise((r) => setTimeout(r, 10));
+          return "ok";
+        });
+      });
+    });
+    expect(result).toBe("ok");
+  });
+
+  it("root scope (no timeout): task.timeout(ms, work) uses ms as-is, no capping", async () => {
+    await expect(
+      sync(async ({ task }) => {
+        await task.timeout(80, async () => {
+          await new Promise((r) => setTimeout(r, 200));
+          return 1;
+        });
+      }),
+    ).rejects.toMatchObject({ message: "Timeout after 80 ms", name: "TimeoutError" });
+  });
 });
 
 describe("task.retry", () => {

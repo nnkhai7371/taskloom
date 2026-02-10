@@ -27,6 +27,8 @@ export type ScopeTaskEntry = {
 export type ScopeStorage = {
   scope: Scope;
   entries: ScopeTaskEntry[];
+  /** Optional timeout deadline (absolute timestamp ms). When set, scope's remaining time is capped by this. */
+  deadlineMs?: number;
   /** Used by withStrictCancellation: timer to warn if tasks ignore cancellation. Cleared when all work settles. */
   strictTimerId?: ReturnType<typeof setTimeout>;
   /** Used by withStrictCancellation: work promises so we can clear the timer when all settle. */
@@ -51,6 +53,26 @@ export function hasCurrentScope(): boolean {
  */
 export function getCurrentScope(): Scope | undefined {
   return scopeStorage.getStore()?.scope;
+}
+
+/**
+ * Returns the current scope storage when inside runInScope or a primitive, or undefined otherwise.
+ * Used by runWithTimeout and primitives to read/write deadline and forward to child scopes.
+ * @internal
+ */
+export function getCurrentScopeStorage(): ScopeStorage | undefined {
+  return scopeStorage.getStore();
+}
+
+/**
+ * Returns the remaining time in ms until the current scope's deadline, or undefined if no deadline.
+ * Used by runWithTimeout to cap requested timeout by parent budget.
+ * @internal
+ */
+export function getScopeDeadlineRemainingMs(): number | undefined {
+  const store = scopeStorage.getStore();
+  if (store?.deadlineMs == null) return undefined;
+  return Math.max(0, store.deadlineMs - Date.now());
 }
 
 /**
@@ -141,8 +163,14 @@ export async function runInScope<T>(
     );
   }
   const entries: ScopeTaskEntry[] = [];
+  const parentStore = scopeStorage.getStore();
+  const store: ScopeStorage = {
+    scope,
+    entries,
+    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+  };
   try {
-    return await scopeStorage.run({ scope, entries }, async () => {
+    return await scopeStorage.run(store, async () => {
       return await fn(scope);
     });
   } finally {
@@ -177,7 +205,13 @@ export async function withStrictCancellation<T>(
   const entries: ScopeTaskEntry[] = [];
   const pendingWorkPromises: Promise<unknown>[] = [];
   const warnAfterMs = options?.warnAfterMs ?? DEFAULT_WARN_AFTER_MS;
-  const store: ScopeStorage = { scope, entries, pendingWorkPromises };
+  const parentStore = scopeStorage.getStore();
+  const store: ScopeStorage = {
+    scope,
+    entries,
+    pendingWorkPromises,
+    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+  };
 
   return await scopeStorage.run(store, async () => {
     try {
