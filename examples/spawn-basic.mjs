@@ -1,6 +1,6 @@
 /**
- * spawn — fire-and-forget: expression completes immediately; next expression runs right after.
- * Pattern: expression0 → spawn(expression1) → expression2 (expression2 does not wait for expression1).
+ * spawn.task — fire-and-forget: expression completes immediately; next expression runs right after.
+ * Pattern: expression0 → spawn.task(expression1) → expression2 (expression2 does not wait for expression1).
  */
 import { spawn } from "taskloom";
 
@@ -10,8 +10,8 @@ const delay = (ms, value) =>
 // expression0
 console.log("expression0");
 
-// spawn { expression1 } — returns immediately; expression1 runs in background
-const task = spawn(async () => {
+// spawn.task { expression1 } — returns immediately; expression1 runs in background
+const task = spawn.task(async () => {
   await delay(80, "spawned");
   console.log("expression1 (spawned) done");
   return "spawned";

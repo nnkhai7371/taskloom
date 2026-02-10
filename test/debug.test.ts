@@ -78,28 +78,28 @@ describe("when debug is enabled", () => {
     expect(output).toMatch(/\d+ms/);
   });
 
-  it("when enableTaskDebug() is enabled, task created via run(work) has inferred name in tree or error (best-effort)", async () => {
+  it("when enableTaskDebug() is enabled, task created via task(work) has inferred name in tree or error (best-effort)", async () => {
     enableTaskDebug();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    await sync(async ({ run }) => {
-      run(async () => ({}));
+    await sync(async ({ task }) => {
+      task(async () => ({}));
     });
     expect(logSpy).toHaveBeenCalledTimes(1);
     const output = logSpy.mock.calls[0][0] as string;
     expect(output).toMatch(/sync#\d+/);
     expect(output).toMatch(/task#\d+/);
-    // Zero-friction task may have inferred name or anonymous; tree must include the task
+    // Task may have inferred name or anonymous; tree must include the task
     const taskLines = output.split("\n").filter((line) => line.includes("task#"));
     expect(taskLines.length).toBeGreaterThanOrEqual(1);
   });
 });
 
-describe("zero-friction sync when debug not enabled", () => {
-  it("no stack capture and zero-friction sync still works with no name", async () => {
+describe("sync when debug not enabled", () => {
+  it("no stack capture and sync still works with no name", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const result = await sync(async ({ run }) => {
-      const a = await run(async () => 1);
-      const b = await run(async () => 2);
+    const result = await sync(async ({ task }) => {
+      const a = await task(async () => 1);
+      const b = await task(async () => 2);
       return a + b;
     });
     expect(result).toBe(3);
@@ -152,9 +152,9 @@ describe("subscribeTaskDebug", () => {
       events.push({ ...e });
     });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    await sync(async ({ run }) => {
-      run(async () => 1);
-      run(async () => 2);
+    await sync(async ({ task }) => {
+      task(async () => 1);
+      task(async () => 2);
     });
     expect(events.length).toBeGreaterThanOrEqual(4);
     const kinds = events.map((e) => e.kind);
@@ -176,14 +176,14 @@ describe("subscribeTaskDebug", () => {
     enableTaskDebug();
     const events: Array<{ kind: string }> = [];
     const unsub = subscribeTaskDebug((e) => events.push({ kind: e.kind }));
-    await sync(async ({ run }) => {
-      run(async () => 1);
+    await sync(async ({ task }) => {
+      task(async () => 1);
     });
     const countAfterFirst = events.length;
     expect(countAfterFirst).toBeGreaterThan(0);
     unsub();
-    await sync(async ({ run }) => {
-      run(async () => 2);
+    await sync(async ({ task }) => {
+      task(async () => 2);
     });
     expect(events.length).toBe(countAfterFirst);
   });
@@ -196,8 +196,8 @@ describe("subscribeTaskDebug", () => {
       throw new Error("subscriber throw");
     });
     subscribeTaskDebug((e) => received.push(e.kind));
-    await sync(async ({ run }) => {
-      run(async () => 1);
+    await sync(async ({ task }) => {
+      task(async () => 1);
     });
     expect(received).toContain("scopeOpened");
     expect(received).toContain("taskRegistered");
@@ -244,8 +244,8 @@ describe("enableTaskDebug(logger) routes output to logger", () => {
     subscribeTaskDebug(() => {
       throw new Error("subscriber throw");
     });
-    await sync(async ({ run }) => {
-      run(async () => 1);
+    await sync(async ({ task }) => {
+      task(async () => 1);
     });
     expect(logger.error).toHaveBeenCalledWith(
       "[taskloom] subscribeTaskDebug subscriber threw:",

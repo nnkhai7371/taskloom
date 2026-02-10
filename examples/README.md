@@ -28,7 +28,7 @@ Examples are `.mjs` and import `taskloom`, which resolves to the built `dist/` w
 | `race-basic.mjs` | `race` | First result wins; other tasks are canceled. |
 | `rush-basic.mjs` | `rush` | First result returned; scope waits for all (no orphans). |
 | `branch-basic.mjs` | `branch` | Background work in a scope; canceled when scope closes. |
-| `spawn-basic.mjs` | `spawn` | Fire-and-forget that returns a `Task` handle. |
+| `spawn-basic.mjs` | `spawn.task` | Fire-and-forget that returns a `Task` handle (no scope linkage). |
 | `scope-cancel.mjs` | `runInScope` / cancellation | Scope and cancellation (e.g. `onCancel`, `runInScope`). |
 | `nested-primitives.mjs` | `sync`, `race`, `rush` (nested) | Running a primitive inside another; inner scope aborts when outer aborts. |
 | `debug-mode.mjs` | `enableTaskDebug`, `subscribeTaskDebug` | Realtime task flow: prints each scope/task event as it happens; full tree when root scope closes. Run: `node examples/debug-mode.mjs`. |

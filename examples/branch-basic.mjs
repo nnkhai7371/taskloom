@@ -22,14 +22,14 @@ await runInScope(async () => {
   console.log("expression0");
 
   // branch: slow, mid, fast (run concurrently inside branch)
-  branch(async ({ run }) => {
-    run(() => delay(300, "slow"))
+  branch(async ({ task }) => {
+    task(() => delay(300, "slow"))
       .then((v) => console.log("  branch:", v))
       .catch((e) => console.log("  branch: slow canceled", e?.name ?? e));
-    run(() => delay(150, "mid"))
+    task(() => delay(150, "mid"))
       .then((v) => console.log("  branch:", v))
       .catch((e) => console.log("  branch: mid canceled", e?.name ?? e));
-    run(() => delay(50, "fast"))
+    task(() => delay(50, "fast"))
       .then((v) => console.log("  branch:", v))
       .catch((e) => console.log("  branch: fast canceled", e?.name ?? e));
   });

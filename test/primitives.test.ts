@@ -5,77 +5,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { sync, race, rush, branch, spawn, spawnScope, runInScope, type Task, type CancelReason } from "taskloom";
 
-describe("sync (zero-friction run)", () => {
-  it("zero-friction sync resolves when all run(work) tasks complete", async () => {
-    const result = await sync(async ({ run }) => {
-      const a = await run(async () => 1);
-      const b = await run(async () => 2);
-      return a + b;
-    });
-    expect(result).toBe(3);
-  });
-
-  it("zero-friction sync rejects on first failure and aborts scope (sibling tasks canceled via AbortSignal)", async () => {
-    const err = new Error("one failed");
-    let otherTask: Task<void> | undefined;
-    await expect(
-      sync(async ({ run }) => {
-        run(async () => {
-          throw err;
-        });
-        otherTask = run(
-          async (signal) =>
-            new Promise<never>((_, reject) => {
-              signal.addEventListener("abort", () => reject(signal.reason), {
-                once: true,
-              });
-            }),
-        );
-        await otherTask;
-      }),
-    ).rejects.toBe(err);
-    expect(otherTask!.status).toBe("canceled");
-    await expect(otherTask!).rejects.toMatchObject({ type: "scope-closed" });
-  });
-
-  it("onCancel on a task started via run(work) runs when scope is aborted (e.g. sibling fails)", async () => {
-    const err = new Error("first fails");
-    const order: string[] = [];
-    await expect(
-      sync(async ({ run }) => {
-        run(async () => {
-          throw err;
-        });
-        const sibling = run(
-          async (signal) =>
-            new Promise<never>((_, reject) => {
-              signal.addEventListener("abort", () => reject(signal.reason), {
-                once: true,
-              });
-            }),
-        );
-        sibling.onCancel(() => order.push("onCancel"));
-        sibling.then(undefined, () => order.push("rejected"));
-        await sibling;
-      }),
-    ).rejects.toBe(err);
-    expect(order).toEqual(["onCancel", "rejected"]);
-  });
-
-  it("run(work) returns Task and sync waits for all such tasks", async () => {
-    const results: number[] = [];
-    await sync(async ({ run }) => {
-      const t1 = run(async () => {
-        await new Promise((r) => setTimeout(r, 5));
-        return 10;
-      });
-      const t2 = run(async () => 20);
-      results.push(await t1, await t2);
-    });
-    expect(results).toEqual([10, 20]);
-  });
-});
-
 describe("sync", () => {
   it("resolves when all tasks complete", async () => {
     const result = await sync(async ({ task }) => {
@@ -172,22 +101,6 @@ describe("sync", () => {
   });
 });
 
-describe("race (zero-friction run)", () => {
-  it("resolves with first successful result using run()", async () => {
-    const value = await race<number>(async ({ run }) => {
-      run(async () => {
-        await new Promise((r) => setTimeout(r, 20));
-        return 1;
-      });
-      run(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-        return 2;
-      });
-    });
-    expect(value).toBe(2);
-  });
-});
-
 describe("race", () => {
   it("resolves with first successful result", async () => {
     const value = await race<number>(async ({ task }) => {
@@ -271,26 +184,6 @@ describe("race", () => {
     await expect(race(async () => {})).rejects.toThrow(
       "race: callback did not start any tasks",
     );
-  });
-});
-
-describe("rush (zero-friction run)", () => {
-  it("resolves with first result using run() and waits for rest", async () => {
-    const order: number[] = [];
-    const value = await rush<number>(async ({ run }) => {
-      run(async () => {
-        await new Promise((r) => setTimeout(r, 20));
-        order.push(1);
-        return 1;
-      });
-      run(async () => {
-        await new Promise((r) => setTimeout(r, 5));
-        order.push(2);
-        return 2;
-      });
-    });
-    expect(value).toBe(2);
-    expect(order).toEqual([2, 1]);
   });
 });
 
@@ -379,32 +272,18 @@ describe("cancellation (scope abort)", () => {
 
   it("onCancel receives scope-closed variant when scope closes (e.g. race first settles)", async () => {
     let loserReason: CancelReason | undefined;
-    const first = await race<string>(async ({ run }) => {
-      run(async (signal) => {
+    const first = await race<string>(async ({ task }) => {
+      task(async (signal) => {
         await new Promise<never>((_, reject) => {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
       }).onCancel((r) => {
         loserReason = r;
       });
-      return await run(async () => "winner");
+      return await task(async () => "winner");
     });
     expect(first).toBe("winner");
     expect(loserReason).toMatchObject({ type: "scope-closed" });
-  });
-});
-
-describe("branch (zero-friction run)", () => {
-  it("returns before tasks complete when using run()", async () => {
-    let completed = false;
-    await branch(async ({ run }) => {
-      const t = run(async () => {
-        await new Promise((r) => setTimeout(r, 50));
-        completed = true;
-      });
-      t.then(undefined, () => {}); // scope close cancels; consume rejection
-    });
-    expect(completed).toBe(false);
   });
 });
 
@@ -730,15 +609,15 @@ describe("nested primitives", () => {
   });
 });
 
-describe("spawnScope (zero-friction spawn)", () => {
-  it("invokes callback with run(); each run(work) spawns a task", async () => {
+describe("spawnScope", () => {
+  it("invokes callback with context; each task(work) spawns a task", async () => {
     const results: number[] = [];
-    await spawnScope(async ({ run }) => {
-      const t1 = run(async () => {
+    await spawnScope(async ({ task }) => {
+      const t1 = task(async () => {
         await new Promise((r) => setTimeout(r, 5));
         return 10;
       });
-      const t2 = run(async () => 20);
+      const t2 = task(async () => 20);
       results.push(await t1, await t2);
     });
     expect(results).toEqual([10, 20]);
@@ -747,8 +626,8 @@ describe("spawnScope (zero-friction spawn)", () => {
   it("returns when callback settles without awaiting spawned tasks", async () => {
     let callbackSettled = false;
     let taskCompleted = false;
-    await spawnScope(async ({ run }) => {
-      run(async () => {
+    await spawnScope(async ({ task }) => {
+      task(async () => {
         await new Promise((r) => setTimeout(r, 50));
         taskCompleted = true;
       });
@@ -759,15 +638,15 @@ describe("spawnScope (zero-friction spawn)", () => {
   });
 });
 
-describe("spawn", () => {
+describe("spawn.task", () => {
   it("work runs", async () => {
-    const t = spawn(async () => 1);
+    const t = spawn.task(async () => 1);
     expect(await t).toBe(1);
   });
 
-  it("spawn expression completes immediately (returns before spawned work resolves)", async () => {
+  it("spawn.task expression completes immediately (returns before spawned work resolves)", async () => {
     let continuationRan = false;
-    const t = spawn(async () => {
+    const t = spawn.task(async () => {
       await new Promise((r) => setTimeout(r, 50));
       return 1;
     });
@@ -776,9 +655,9 @@ describe("spawn", () => {
     expect(await t).toBe(1);
   });
 
-  it("next expression runs immediately after spawn (expression2 runs without waiting for work)", async () => {
+  it("next expression runs immediately after spawn.task (expression2 runs without waiting for work)", async () => {
     const order: string[] = [];
-    const work = spawn(async () => {
+    const work = spawn.task(async () => {
       order.push("work-start");
       await new Promise((r) => setTimeout(r, 20));
       order.push("work-end");
@@ -792,9 +671,9 @@ describe("spawn", () => {
     expect(order).toEqual(["work-start", "after-spawn", "work-end"]);
   });
 
-  it("spawn is allowed outside async context (sync call site)", () => {
+  it("spawn.task is allowed outside async context (sync call site)", () => {
     let spawnedDone = false;
-    const t = spawn(async () => {
+    const t = spawn.task(async () => {
       await new Promise((r) => setTimeout(r, 10));
       spawnedDone = true;
       return 2;
@@ -810,7 +689,7 @@ describe("spawn", () => {
     let spawnedDone = false;
     let spawnedTask: Task<number> | undefined;
     await runInScope(async () => {
-      spawnedTask = spawn(async () => {
+      spawnedTask = spawn.task(async () => {
         await new Promise((r) => setTimeout(r, 30));
         spawnedDone = true;
         return 1;
@@ -820,11 +699,11 @@ describe("spawn", () => {
     expect(spawnedDone).toBe(true);
   });
 
-  it("spawn is not scope-bound—spawned work is not canceled when caller scope closes and may complete after scope ends", async () => {
+  it("spawn.task is not scope-bound—spawned work is not canceled when caller scope closes and may complete after scope ends", async () => {
     let scopeClosed = false;
     let spawnedTask: Task<number> | undefined;
     await runInScope(async () => {
-      spawnedTask = spawn(async () => {
+      spawnedTask = spawn.task(async () => {
         await new Promise((r) => setTimeout(r, 10));
         return 42;
       });
@@ -833,6 +712,31 @@ describe("spawn", () => {
     const result = await spawnedTask!;
     expect(scopeClosed).toBe(true);
     expect(result).toBe(42);
+  });
+});
+
+describe("spawn (callback form)", () => {
+  it("invokes callback with TaskloomContext and returns Task that resolves with callback result", async () => {
+    const t = spawn(async ({ task }) => {
+      const a = await task(async () => 1);
+      const b = await task(async () => 2);
+      return a + b;
+    });
+    expect(await t).toBe(3);
+  });
+
+  it("spawn(callback) completes immediately and returns Task without awaiting", async () => {
+    let afterSpawnRan = false;
+    const t = spawn(async ({ task }) => {
+      await task(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        return 42;
+      });
+      return 0;
+    });
+    afterSpawnRan = true;
+    expect(afterSpawnRan).toBe(true);
+    expect(await t).toBe(0);
   });
 });
 
@@ -872,6 +776,81 @@ describe("optional task name", () => {
     });
     expect((caught as { taskName?: string }).taskName).toBe("named-cancel");
   });
+
+  it("task(work, { name }) runs work with name for debugging", async () => {
+    const result = await sync(async ({ task }) => {
+      return await task(
+        async () => 7,
+        { name: "opts-name" },
+      );
+    });
+    expect(result).toBe(7);
+  });
+});
+
+describe("task.all, task.race, task.allSettled", () => {
+  it("task.all resolves with results in order when all tasks fulfill", async () => {
+    const result = await sync(async ({ task }) => {
+      const t1 = task(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return 1;
+      });
+      const t2 = task(async () => 2);
+      const t3 = task(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        return 3;
+      });
+      return await task.all([t1, t2, t3]);
+    });
+    expect(result).toEqual([1, 2, 3]);
+  });
+
+  it("task.all rejects when one task rejects", async () => {
+    const err = new Error("first failure");
+    await expect(
+      sync(async ({ task }) => {
+        const t1 = task(async () => {
+          await new Promise((r) => setTimeout(r, 5));
+          throw err;
+        });
+        const t2 = task(async () => 2);
+        return await task.all([t1, t2]);
+      }),
+    ).rejects.toBe(err);
+  });
+
+  it("task.race resolves with first settlement", async () => {
+    const value = await sync(async ({ task }) => {
+      const t1 = task(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        return 1;
+      });
+      const t2 = task(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        return 2;
+      });
+      return await task.race([t1, t2]);
+    });
+    expect(value).toBe(2);
+  });
+
+  it("task.allSettled resolves with settlement results in order", async () => {
+    const err = new Error("second fails");
+    const { createContext } = await import("../src/primitives.js");
+    const result = await runInScope(async (scope) => {
+      const ctx = createContext(scope);
+      const t1 = ctx.task(async () => 1);
+      const t2 = ctx.task(async () => {
+        throw err;
+      });
+      const t3 = ctx.task(async () => 3);
+      return await ctx.task.allSettled([t1, t2, t3]);
+    });
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual({ status: "fulfilled", value: 1 });
+    expect(result[1]).toEqual({ status: "rejected", reason: err });
+    expect(result[2]).toEqual({ status: "fulfilled", value: 3 });
+  });
 });
 
 describe("primitives smoke (success paths)", () => {
@@ -907,7 +886,7 @@ describe("primitives smoke (success paths)", () => {
       task(async () => 2);
     });
 
-    const sp = spawn(async () => 42);
+    const sp = spawn.task(async () => 42);
     expect(await sp).toBe(42);
   });
 });
@@ -947,7 +926,7 @@ describe("task.sleep", () => {
 describe("task.timeout", () => {
   it("resolves with work result when work completes within limit", async () => {
     const result = await sync(async ({ task }) => {
-      return await task.timeout(5000, async () => {
+      return await task.timeout(5000, async (_signal) => {
         await new Promise((r) => setTimeout(r, 5));
         return 42;
       });
@@ -958,7 +937,7 @@ describe("task.timeout", () => {
   it("rejects and aborts scope when time limit is exceeded", async () => {
     await expect(
       sync(async ({ task }) => {
-        await task.timeout(50, async () => {
+        await task.timeout(50, async (_signal) => {
           await new Promise((r) => setTimeout(r, 200));
           return 1;
         });
@@ -970,7 +949,7 @@ describe("task.timeout", () => {
     let childTask: Task<void> | undefined;
     await expect(
       sync(async ({ task }) => {
-        await task.timeout(100, async () => {
+        await task.timeout(100, async (_signal) => {
           childTask = task(
             async (signal) =>
               new Promise<never>((_, reject) => {
@@ -989,7 +968,7 @@ describe("task.timeout", () => {
     let receivedReason: CancelReason | undefined;
     await expect(
       sync(async ({ task }) => {
-        await task.timeout(80, async () => {
+        await task.timeout(80, async (_signal) => {
           const t = task(
             async (signal) =>
               new Promise<never>((_, reject) => {
@@ -1011,9 +990,9 @@ describe("task.timeout", () => {
   it("nested task.timeout: inner requested 200ms is capped by parent remaining ~50ms and rejects on timeout", async () => {
     await expect(
       sync(async ({ task }) => {
-        await task.timeout(100, async () => {
+        await task.timeout(100, async (_signal) => {
           await new Promise((r) => setTimeout(r, 50));
-          await task.timeout(200, async () => {
+          await task.timeout(200, async (_signal2) => {
             await new Promise((r) => setTimeout(r, 200));
             return 1;
           });
@@ -1024,8 +1003,8 @@ describe("task.timeout", () => {
 
   it("parent timeout(60): child task.timeout(30, work) gets full 30ms and resolves", async () => {
     const result = await sync(async ({ task }) => {
-      return await task.timeout(60, async () => {
-        return await task.timeout(30, async () => {
+      return await task.timeout(60, async (_signal) => {
+        return await task.timeout(30, async (_signal2) => {
           await new Promise((r) => setTimeout(r, 10));
           return "ok";
         });
@@ -1037,7 +1016,7 @@ describe("task.timeout", () => {
   it("root scope (no timeout): task.timeout(ms, work) uses ms as-is, no capping", async () => {
     await expect(
       sync(async ({ task }) => {
-        await task.timeout(80, async () => {
+        await task.timeout(80, async (_signal) => {
           await new Promise((r) => setTimeout(r, 200));
           return 1;
         });
@@ -1048,14 +1027,17 @@ describe("task.timeout", () => {
 
 describe("task.retry", () => {
   it("resolves with result when fn succeeds on first attempt", async () => {
-    const fn = vi.fn().mockResolvedValue(42);
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => 42);
     const result = await sync(async ({ task }) => task.retry(fn, { retries: 3, backoff: "exponential" }));
     expect(result).toBe(42);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it("resolves when fn succeeds on a later attempt", async () => {
-    const fn = vi.fn().mockRejectedValueOnce(new Error("a")).mockRejectedValueOnce(new Error("b")).mockResolvedValue(100);
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error("a"))
+      .mockRejectedValueOnce(new Error("b"))
+      .mockImplementation(async (_signal: AbortSignal) => 100);
     const result = await sync(async ({ task }) =>
       task.retry(fn, { retries: 3, backoff: "fixed", initialDelayMs: 5 }),
     );
@@ -1065,7 +1047,9 @@ describe("task.retry", () => {
 
   it("rejects when all attempts are exhausted", async () => {
     const err = new Error("always fails");
-    const fn = vi.fn().mockRejectedValue(err);
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => {
+      throw err;
+    });
     await expect(
       sync(async ({ task }) => task.retry(fn, { retries: 2 })),
     ).rejects.toBe(err);
@@ -1073,7 +1057,9 @@ describe("task.retry", () => {
   });
 
   it("stops and rejects on scope abort during retry", async () => {
-    const fn = vi.fn().mockRejectedValue(new Error("fail"));
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => {
+      throw new Error("fail");
+    });
     const { runInScope } = await import("taskloom");
     const createContext = (await import("../src/primitives.js")).createContext;
     await expect(
@@ -1088,7 +1074,7 @@ describe("task.retry", () => {
 
   it("backoff behavior: exponential increases delay", async () => {
     const delays: number[] = [];
-    const fn = vi.fn().mockImplementation(async () => {
+    const fn = vi.fn().mockImplementation(async (_signal: AbortSignal) => {
       delays.push(Date.now());
       if (delays.length < 3) throw new Error("retry");
       return 1;

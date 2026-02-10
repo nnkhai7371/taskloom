@@ -17,34 +17,34 @@ const MED = 400;
 const FAST = 200;
 
 // sync
-const syncResult = await sync(async ({ run }) => {
-  const a = run(() => delay(MED, "a"));
-  const b = run(() => delay(SLOW, "b"));
-  return [await a, await b];
+const syncResult = await sync(async ({ task }) => {
+  const a = task(() => delay(MED, "a"));
+  const b = task(() => delay(SLOW, "b"));
+  return await task.all([a, b]);
 });
 console.log("sync result:", syncResult);
 
 // race
-const raceResult = await race(async ({ run }) => {
-  run(() => delay(SLOW, "slow"));
-  run(() => delay(FAST, "fast"));
+const raceResult = await race(async ({ task }) => {
+  task(() => delay(SLOW, "slow"));
+  task(() => delay(FAST, "fast"));
 });
 console.log("race result:", raceResult);
 
 // rush
-const rushResult = await rush(async ({ run }) => {
-  run(() => delay(MED + 200, "second"));
-  run(() => delay(FAST, "first"));
+const rushResult = await rush(async ({ task }) => {
+  task(() => delay(MED + 200, "second"));
+  task(() => delay(FAST, "first"));
 });
 console.log("rush result:", rushResult);
 
 // branch (task may be canceled when scope closes)
-await branch(async ({ run }) => {
-  const t = run(() => delay(SLOW * 2, "bg"));
+await branch(async ({ task }) => {
+  const t = task(() => delay(SLOW * 2, "bg"));
   t.then(undefined, () => {});
 });
 console.log("branch done");
 
-// spawn (own scope; not tied to a parent scope)
-const task = spawn(() => delay(MED, "spawned"));
+// spawn.task (fire-and-forget; not tied to a parent scope)
+const task = spawn.task(() => delay(MED, "spawned"));
 console.log("spawn result:", await task);

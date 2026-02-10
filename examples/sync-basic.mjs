@@ -7,10 +7,10 @@ import { sync } from "taskloom";
 const delay = (ms, value) =>
   new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
-const result = await sync(async ({ run }) => {
-  const a = run(() => delay(50, "a"));
-  const b = run(() => delay(30, "b"));
-  return [await a, await b];
+const result = await sync(async ({ task }) => {
+  const a = task(() => delay(50, "a"));
+  const b = task(() => delay(30, "b"));
+  return await task.all([a, b]);
 });
 
 console.log("sync result:", result);

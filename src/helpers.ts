@@ -58,14 +58,14 @@ export type ScopeLike = {
  * When entering work, the scope storage's deadline is set to Date.now() + effectiveMs so nested task.timeout and primitives see the capped budget.
  * Timer is always cleared (on completion, timeout, or signal abort) to avoid leaking the sleep listener.
  * @param ms - Time limit in milliseconds
- * @param work - Async work to run
+ * @param work - Async work to run; receives the scope signal so it can pass it to fetch/I/O
  * @param scope - Scope to abort on timeout (cancels children)
  * @param signal - AbortSignal for the timeout timer; when scope aborts, timer is cleared
  * @returns Promise with the work result, or rejects on timeout/abort
  */
 export async function runWithTimeout<T>(
   ms: number,
-  work: () => Promise<T>,
+  work: (signal: AbortSignal) => Promise<T>,
   scope: ScopeLike,
   signal: AbortSignal,
 ): Promise<T> {
@@ -95,9 +95,9 @@ export async function runWithTimeout<T>(
     const store = getCurrentScopeStorage();
     if (store != null) {
       const deadlineMs = Date.now() + effectiveMs;
-      return runWithScopeStorage({ ...store, deadlineMs }, work);
+      return runWithScopeStorage({ ...store, deadlineMs }, () => work(signal));
     }
-    return work();
+    return work(signal);
   };
 
   try {
@@ -115,8 +115,8 @@ export async function runWithTimeout<T>(
 export function createTimeout(
   scope: ScopeLike,
   signal: AbortSignal,
-): <T>(ms: number, work: () => Promise<T>) => Promise<T> {
-  return <T>(ms: number, work: () => Promise<T>): Promise<T> =>
+): <T>(ms: number, work: (signal: AbortSignal) => Promise<T>) => Promise<T> {
+  return <T>(ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> =>
     runWithTimeout(ms, work, scope, signal);
 }
 
@@ -140,13 +140,13 @@ const DEFAULT_INITIAL_DELAY_MS = 50;
 /**
  * Runs async work with retries. On failure, retries up to options.retries times with optional backoff between attempts.
  * Respects the scope's AbortSignal: if aborted during a delay or attempt, stops and rejects with the signal's reason.
- * @param fn - Async function to run (attempted until success or retries exhausted)
+ * @param fn - Async function to run (attempted until success or retries exhausted); receives the scope signal on each attempt
  * @param options - RetryOptions (retries, backoff, optional initialDelayMs)
  * @param signal - AbortSignal; when aborted, retry stops and rejects
  * @returns Promise with the first successful result, or rejects with last error / signal reason
  */
 export async function retry<T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   options: RetryOptions,
   signal: AbortSignal,
 ): Promise<T> {
@@ -157,7 +157,7 @@ export async function retry<T>(
       throw signal.reason;
     }
     try {
-      return await fn();
+      return await fn(signal);
     } catch (e) {
       lastError = e;
       if (attempt === maxRetries) {
@@ -178,9 +178,9 @@ export async function retry<T>(
  * Bound to the current scope's signal so scope cancellation stops retries and rejects.
  */
 export function createRetry(signal: AbortSignal): <T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   options: RetryOptions,
 ) => Promise<T> {
-  return <T>(fn: () => Promise<T>, options: RetryOptions): Promise<T> =>
+  return <T>(fn: (signal: AbortSignal) => Promise<T>, options: RetryOptions): Promise<T> =>
     retry(fn, options, signal);
 }

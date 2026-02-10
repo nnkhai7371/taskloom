@@ -113,15 +113,15 @@ describe("after enableStrictMode()", () => {
 
 describe("strict mode does not change runtime semantics", () => {
   it("sync result is identical with strict mode on vs off when no misuse", async () => {
-    const resultOff = await sync(async ({ run }) => {
-      const a = run(async () => 1);
-      const b = run(async () => 2);
+    const resultOff = await sync(async ({ task }) => {
+      const a = task(async () => 1);
+      const b = task(async () => 2);
       return (await a) + (await b);
     });
     enableStrictMode({ onWarn: () => {} });
-    const resultOn = await sync(async ({ run }) => {
-      const a = run(async () => 1);
-      const b = run(async () => 2);
+    const resultOn = await sync(async ({ task }) => {
+      const a = task(async () => 1);
+      const b = task(async () => 2);
       return (await a) + (await b);
     });
     disableStrictMode();
@@ -131,16 +131,16 @@ describe("strict mode does not change runtime semantics", () => {
 
   it("sync rejection is identical with strict mode on vs off", async () => {
     const err = new Error("fail");
-    const promiseOff = sync(async ({ run }) => {
-      run(async () => {
+    const promiseOff = sync(async ({ task }) => {
+      task(async () => {
         throw err;
       });
       await new Promise(() => {});
     });
     disableStrictMode();
     enableStrictMode({ onWarn: () => {} });
-    const promiseOn = sync(async ({ run }) => {
-      run(async () => {
+    const promiseOn = sync(async ({ task }) => {
+      task(async () => {
         throw err;
       });
       await new Promise(() => {});

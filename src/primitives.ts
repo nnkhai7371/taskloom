@@ -19,41 +19,49 @@ import { strictModeWarn } from "./strict-mode.js";
 
 export type { RetryOptions, RetryBackoff } from "./helpers.js";
 
+/** Options for task when using the form task(work, options). */
+export type TaskOptions = { name?: string };
+
 /**
- * Context passed to primitive callbacks. Use `task(work)` or `task(name, work)` to start
- * tasks tied to the current scope; they are canceled when the scope closes.
- * Helpers: task.sleep(ms), task.timeout(ms, work), task.retry(fn, options).
+ * Unwraps an array/tuple of Task types to the array of their resolved values.
+ * Used for task.all() result type.
  */
-export type PrimitivesContext = {
+export type UnwrapTasks<T extends readonly Task<unknown>[]> = {
+  -readonly [K in keyof T]: T[K] extends Task<infer U> ? Awaited<U> : never;
+};
+
+/**
+ * Result shape of task.allSettled(): array of PromiseSettledResult for each task.
+ */
+export type SettledTasks<T extends readonly Task<unknown>[]> = {
+  -readonly [K in keyof T]: T[K] extends Task<infer U> ? PromiseSettledResult<Awaited<U>> : never;
+};
+
+/**
+ * Context passed to primitive callbacks (sync, race, rush, branch, spawn). Use `task(work)`,
+ * `task(name, work)`, or `task(work, { name })` to start tasks tied to the current scope; they are canceled when the scope closes.
+ * Helpers: task.sleep(ms), task.timeout(ms, work), task.retry(fn, options), task.all, task.race, task.allSettled.
+ */
+export type TaskloomContext = {
   task: {
     <T>(work: (signal: AbortSignal) => Promise<T>): Task<T>;
     <T>(name: string, work: (signal: AbortSignal) => Promise<T>): Task<T>;
+    <T>(work: (signal: AbortSignal) => Promise<T>, options: TaskOptions): Task<T>;
     sleep(ms: number): Promise<void>;
-    timeout<T>(ms: number, work: () => Promise<T>): Promise<T>;
-    retry<T>(fn: () => Promise<T>, options: RetryOptions): Promise<T>;
+    timeout<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+    retry<T>(fn: (signal: AbortSignal) => Promise<T>, options: RetryOptions): Promise<T>;
+    all<T extends readonly Task<unknown>[]>(tasks: T): Promise<UnwrapTasks<T>>;
+    race<T>(tasks: readonly Task<T>[]): Promise<T>;
+    allSettled<T extends readonly Task<unknown>[]>(tasks: T): Promise<SettledTasks<T>>;
   };
   scope: Scope;
 };
 
 /**
- * Callback type for sync, race, rush, and branch. Receives `{ task, scope }`; return a
- * Promise that starts work via `task(work)` or `task(name, work)`.
+ * Callback type for sync, race, rush, branch, and spawn. Receives TaskloomContext (`{ task, scope }`);
+ * return a Promise that starts work via `task(work)` or `task(name, work)`.
  */
-export type PrimitivesCallback<R = void> = (ctx: PrimitivesContext) => Promise<R>;
-
-/**
- * Minimal context for zero-friction usage: only `run(work)` to start a task. No explicit
- * task/scope API; tasks are still scope-bound and canceled when the primitive's scope closes.
- */
-export type ZeroFrictionSyncContext = {
-  run: <T>(work: (signal: AbortSignal) => Promise<T>) => Task<T>;
-};
-
-/**
- * Callback type for zero-friction sync. Receives `{ run }` only; call `run(work)` to start
- * tasks without using task/scope explicitly.
- */
-export type ZeroFrictionSyncCallback<R = void> = (ctx: ZeroFrictionSyncContext) => Promise<R>;
+export type SyncCallback<R = void> = (ctx: TaskloomContext) => Promise<R>;
 
 /** Attach a no-op rejection handler so unawaited task promises never cause unhandledRejection. */
 function attachRejectionHandler<T>(t: Task<T>): Task<T> {
@@ -64,49 +72,55 @@ function attachRejectionHandler<T>(t: Task<T>): Task<T> {
 function taskImpl<T>(
   scope: Scope,
   first: string | ((signal: AbortSignal) => Promise<T>),
-  second?: (signal: AbortSignal) => Promise<T>,
+  second?: (signal: AbortSignal) => Promise<T> | TaskOptions,
 ): Task<T> {
-  const work = typeof first === "string" ? second! : first;
-  const name = typeof first === "string" ? first : undefined;
+  let work: (signal: AbortSignal) => Promise<T>;
+  let name: string | undefined;
+  if (typeof first === "string") {
+    work = second as (signal: AbortSignal) => Promise<T>;
+    name = first;
+  } else if (second && typeof second === "object" && "name" in second) {
+    work = first;
+    name = (second as TaskOptions).name;
+  } else {
+    work = first;
+    name = undefined;
+  }
   return runTask(work, name ? { signal: scope.signal, name } : { signal: scope.signal });
-}
-
-function makeRun(scope: Scope, tasks: Task<unknown>[]): ZeroFrictionSyncContext["run"] {
-  return <T>(work: (signal: AbortSignal) => Promise<T>): Task<T> => {
-    const name = isTaskDebugEnabled() ? getCallerName(2) : undefined;
-    const t =
-      name && name !== ""
-        ? taskImpl(scope, name, work)
-        : taskImpl(scope, work);
-    attachRejectionHandler(t);
-    tasks.push(t);
-    return t;
-  };
 }
 
 function attachHelpersToTask(
   scope: Scope,
   taskFn: (
     first: string | ((signal: AbortSignal) => Promise<unknown>),
-    second?: (signal: AbortSignal) => Promise<unknown>,
+    second?: (signal: AbortSignal) => Promise<unknown> | TaskOptions,
   ) => Task<unknown>,
-): PrimitivesContext["task"] {
+): TaskloomContext["task"] {
   const bound = Object.assign(taskFn, {
     sleep: createSleep(scope.signal),
     timeout: createTimeout(scope, scope.signal),
     retry: createRetry(scope.signal),
+    all<T extends readonly Task<unknown>[]>(tasks: T): Promise<UnwrapTasks<T>> {
+      return Promise.all(tasks) as Promise<UnwrapTasks<T>>;
+    },
+    race<T>(tasks: readonly Task<T>[]): Promise<T> {
+      return Promise.race(tasks);
+    },
+    allSettled<T extends readonly Task<unknown>[]>(tasks: T): Promise<SettledTasks<T>> {
+      return Promise.allSettled(tasks) as Promise<SettledTasks<T>>;
+    },
   });
-  return bound as PrimitivesContext["task"];
+  return bound as TaskloomContext["task"];
 }
 
 /**
  * Returns { task, scope } where task(work) runs work with scope.signal.
  * Used by primitives that run inside runInScope.
  */
-export function createContext(scope: Scope): PrimitivesContext {
+export function createContext(scope: Scope): TaskloomContext {
   const taskFn = (
     first: string | ((signal: AbortSignal) => Promise<unknown>),
-    second?: (signal: AbortSignal) => Promise<unknown>,
+    second?: (signal: AbortSignal) => Promise<unknown> | TaskOptions,
   ) => taskImpl(scope, first, second);
   return {
     task: attachHelpersToTask(scope, taskFn),
@@ -114,17 +128,11 @@ export function createContext(scope: Scope): PrimitivesContext {
   };
 }
 
-/**
- * Context passed to sync, race, rush, and branch. Has both `task`/`scope` (explicit API) and
- * `run` (zero-friction); use either to start tasks in the current scope.
- */
-export type SyncContext = PrimitivesContext & ZeroFrictionSyncContext;
-
-function createSyncContext(scope: Scope): { tasks: Task<unknown>[]; ctx: SyncContext } {
+function createSyncContext(scope: Scope): { tasks: Task<unknown>[]; ctx: TaskloomContext } {
   const tasks: Task<unknown>[] = [];
   const taskFn = (
     first: string | ((signal: AbortSignal) => Promise<unknown>),
-    second?: (signal: AbortSignal) => Promise<unknown>,
+    second?: (signal: AbortSignal) => Promise<unknown> | TaskOptions,
   ) => {
     const t = taskImpl(scope, first, second);
     attachRejectionHandler(t);
@@ -136,7 +144,6 @@ function createSyncContext(scope: Scope): { tasks: Task<unknown>[]; ctx: SyncCon
     ctx: {
       task: attachHelpersToTask(scope, taskFn),
       scope,
-      run: makeRun(scope, tasks),
     },
   };
 }
@@ -144,20 +151,16 @@ function createSyncContext(scope: Scope): { tasks: Task<unknown>[]; ctx: SyncCon
 /**
  * Runs all tasks started in the callback concurrently and waits for all to complete.
  * On first rejection or cancellation, the scope is aborted so remaining tasks are canceled and the error is rethrown.
- * Callback receives `{ task, scope, run }`: use task/scope for explicit API, or `run(work)` for zero-friction.
+ * Callback receives TaskloomContext (`{ task, scope }`); use `task(work)` or `task(name, work)` to start tasks.
  *
  * @example
- * // Before: Promise.all – no built-in cancellation on first failure
- * const [a, b] = await Promise.all([fetchA(), fetchB()]);
- *
- * @example
- * // After: sync – first failure aborts scope and cancels other tasks
- * const result = await sync(async ({ run }) => {
- *   run(fetchA());
- *   run(fetchB());
+ * const result = await sync(async ({ task }) => {
+ *   const a = task(fetchA);
+ *   const b = task(fetchB);
+ *   return await Promise.all([a, b]);
  * });
  */
-export function sync<R>(callback: (ctx: SyncContext) => Promise<R>): Promise<R> {
+export function sync<R>(callback: SyncCallback<R>): Promise<R> {
   return runInScope(
     async (scope) => {
       pushScope("sync");
@@ -178,20 +181,15 @@ export function sync<R>(callback: (ctx: SyncContext) => Promise<R>): Promise<R> 
 /**
  * Runs tasks from the callback concurrently. The first task to complete wins; the promise resolves or rejects with that result.
  * All other tasks are canceled when the first settles (scope is aborted).
- * Callback receives `{ task, scope, run }`: use task/scope or `run(work)` for zero-friction.
+ * Callback receives TaskloomContext (`{ task, scope }`); use `task(work)` or `task(name, work)` to start tasks.
  *
  * @example
- * // Before: Promise.race – losers keep running; no automatic cleanup
- * const first = await Promise.race([fetchA(), fetchB()]);
- *
- * @example
- * // After: race – first result wins; other tasks are canceled
- * const first = await race(async ({ run }) => {
- *   run(fetchA());
- *   run(fetchB());
+ * const first = await race(async ({ task }) => {
+ *   task(fetchA);
+ *   task(fetchB);
  * });
  */
-export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promise<T> {
+export function race<T>(callback: SyncCallback<unknown>): Promise<T> {
   return (async () => {
     pushScope("race");
     try {
@@ -245,9 +243,9 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
 /**
  * Runs tasks from the callback concurrently. Returns as soon as the first task settles (resolve or reject).
  * Other tasks keep running in the scope; the scope waits for all to settle before closing.
- * Callback receives `{ task, scope, run }`: use task/scope or `run(work)` for zero-friction.
+ * Callback receives TaskloomContext (`{ task, scope }`); use `task(work)` or `task(name, work)` to start tasks.
  */
-export function rush<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promise<T> {
+export function rush<T>(callback: SyncCallback<unknown>): Promise<T> {
   return runInScope(
     async (scope) => {
       pushScope("rush");
@@ -271,11 +269,10 @@ export function rush<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
 }
 
 /**
- * Starts work by invoking the callback with `{ task, scope, run }` and returns immediately (does not await the tasks).
+ * Starts work by invoking the callback with TaskloomContext (`{ task, scope }`) and returns immediately (does not await the tasks).
  * All tasks started in the branch are scope-bound; the branch scope closes when the enclosing async context (parent scope) completes, so branch tasks are canceled then—or when the branch body completes, whichever comes first.
- * Callback receives `{ task, scope, run }`: use task/scope or `run(work)` for zero-friction.
  */
-export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<void> {
+export function branch(callback: SyncCallback<void>): Promise<void> {
   const parentScope = getCurrentScope();
   if (!parentScope) {
     // No parent: keep current behavior — scope closes when callback settles to avoid leaking.
@@ -328,50 +325,76 @@ export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<v
 }
 
 /**
- * Context for spawn and spawnScope. Use `run(work)` to start a task with no parent scope;
- * the task is not canceled when the caller's scope closes.
+ * Runs the callback with a TaskloomContext in a new scope. The scope is linked to the parent signal when spawn
+ * is called from within runInScope or another primitive, so parent abort cancels the spawn. When called with no
+ * parent scope, the spawn scope has no parent signal. Returns a Task that resolves or rejects with the callback result.
  */
-export type SpawnContext = {
-  run: <T>(work: (signal: AbortSignal) => Promise<T>) => Task<T>;
-};
-
-/**
- * Fire-and-forget: runs a single async work function with no parent scope or signal. The spawn expression completes
- * immediately: the call returns a Task in the same synchronous turn without awaiting the work. The next expression
- * after spawn runs immediately and concurrently with the spawned work, which continues independently until it completes.
- * Spawn is allowed outside async context (e.g. from sync code); no runInScope or async wrapper is required. The body
- * of spawn is a single async function call (one work function). The task is not canceled when the caller's scope closes.
- * Callers may optionally await the returned Task; they are not required to await it for correctness.
- */
-export function spawn<T>(
-  work: (signal: AbortSignal) => Promise<T>,
-): Task<T> {
+export function spawn<R>(callback: SyncCallback<R>): Task<R> {
   pushScope("spawn");
   try {
-    return runTask(work, {});
+    const controller = new AbortController();
+    const scope: Scope = {
+      signal: controller.signal,
+      abort: (reason?: CancelReason | unknown) => controller.abort(reason),
+    };
+    const parentScope = getCurrentScope();
+    if (parentScope) {
+      parentScope.signal.addEventListener(
+        "abort",
+        () => controller.abort(parentScope.signal.reason),
+        { once: true },
+      );
+    }
+    const entries: ScopeStorage["entries"] = [];
+    const parentStore = getCurrentScopeStorage();
+    const store: ScopeStorage = {
+      scope,
+      entries,
+      ...(parentStore?.deadlineMs && { deadlineMs: parentStore.deadlineMs }),
+    };
+    const ctx = createContext(scope);
+    return runTask(
+      async (signal) => {
+        const result = await runWithScopeStorage(store, () => callback(ctx));
+        if (signal.aborted) throw signal.reason;
+        return result;
+      },
+      { signal: scope.signal },
+    );
   } finally {
     popScope();
   }
 }
 
 /**
- * Creates a scope for fire-and-forget work. Invokes the callback with `{ run }`; each `run(work)` spawns a task with no parent scope.
- * Returns when the callback settles; does not await the spawned tasks. Use when you want to group fire-and-forget tasks under one scope.
+ * Fire-and-forget: runs a single async work function with no parent scope or signal. Completes immediately:
+ * returns a Task in the same synchronous turn without awaiting the work. The spawned work is not attached to the
+ * current scope and is not canceled when the caller's scope closes. Allowed outside async context.
  */
-export function spawnScope(
-  callback: (ctx: SpawnContext) => void | Promise<void>,
-): Promise<void> {
+spawn.task = function spawnTask<T>(work: (signal: AbortSignal) => Promise<T>): Task<T> {
+  pushScope("spawn");
+  try {
+    return runTask(work, {});
+  } finally {
+    popScope();
+  }
+};
+
+/**
+ * Creates a scope for fire-and-forget work. Invokes the callback with TaskloomContext (`{ task, scope }`).
+ * Returns when the callback settles; does not await tasks started via ctx.task. Use to group fire-and-forget tasks.
+ */
+export function spawnScope(callback: SyncCallback<void>): Promise<void> {
   return (async () => {
     pushScope("spawn");
     try {
-      const run = <T>(work: (signal: AbortSignal) => Promise<T>): Task<T> => {
-        const name = isTaskDebugEnabled() ? getCallerName(2) : undefined;
-        return runTask(
-          work,
-          name && name !== "" ? { name } : {},
-        );
+      const controller = new AbortController();
+      const scope: Scope = {
+        signal: controller.signal,
+        abort: (reason?: CancelReason | unknown) => controller.abort(reason),
       };
-      await callback({ run });
+      const ctx = createContext(scope);
+      await callback(ctx);
     } finally {
       popScope();
     }

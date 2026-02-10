@@ -1,8 +1,8 @@
 # Taskloom
 
-**Structured concurrency for Node.js** - run parallel async work that cancels cleanly, leaves no orphan tasks, and behaves the way you expect.
+**Structured concurrency for Node.js and browser** - run parallel async work that cancels cleanly, leaves no orphan tasks, and behaves the way you expect.
 
-- **Zero dependencies** · Node 22+ · ESM only
+- **Zero dependencies** · Node 22+ and browser · ESM only
 - **Scopes and tasks** · First failure or first result cancels the rest; background work is scope-bound or explicitly detached
 - **Built on `AbortSignal`** · Your async work can respect `signal.aborted` and exit early; cancellation can carry a reason
 
@@ -21,7 +21,7 @@
     - [race - "First result wins; cancel the rest"](#race---first-result-wins-cancel-the-rest)
     - [rush - "First result back, wait for all (no orphans)"](#rush---first-result-back-wait-for-all-no-orphans)
     - [branch - "Background work in a scope; cancel when scope closes"](#branch---background-work-in-a-scope-cancel-when-scope-closes)
-    - [spawn - "Fire-and-forget with a handle; not scope-bound"](#spawn---fire-and-forget-with-a-handle-not-scope-bound)
+    - [spawn - "Run callback in a scope; or fire-and-forget with spawn.task"](#spawn---run-callback-in-a-scope-or-fire-and-forget-with-spawntask)
     - [spawnScope - "Group fire-and-forget tasks under one scope"](#spawnscope---group-fire-and-forget-tasks-under-one-scope)
   - [Zero-friction API](#zero-friction-api)
   - [Task naming](#task-naming)
@@ -44,7 +44,7 @@
 npm install taskloom
 ```
 
-**Requirements:** Node.js **22+**, ESM (`"type": "module"` or `.mjs`). No runtime dependencies.
+**Requirements:** Node.js **22+** or browser; ESM (`"type": "module"` or `.mjs`). No runtime dependencies. The package supports both Node and browser via the same entry; bundlers (Vite, webpack, etc.) can resolve it for browser builds.
 
 ---
 
@@ -55,10 +55,10 @@ Run two fetches in parallel; if one fails, the other is canceled and you get a s
 ```js
 import { sync } from "taskloom";
 
-const [user, posts] = await sync(async ({ run }) => {
-  const u = run(() => fetch("/api/user").then((r) => r.json()));
-  const p = run(() => fetch("/api/posts").then((r) => r.json()));
-  return [await u, await p];
+const [user, posts] = await sync(async ({ task }) => {
+  const u = task((signal) => fetch("/api/user", { signal }).then((r) => r.json()));
+  const p = task((signal) => fetch("/api/posts", { signal }).then((r) => r.json()));
+  return await task.all([u, p]);
 });
 ```
 
@@ -79,7 +79,7 @@ const [user, posts] = await sync(async ({ run }) => {
 ## Core concepts
 
 - **Scope** - Owns an `AbortController`. Tasks created with that scope’s `signal` are canceled when the scope is closed (e.g. when `runInScope` or a primitive exits). You can call `scope.abort(reason)` to cancel all tasks in the scope; the reason is available to `onCancel` handlers.
-- **Task** - An async computation with a lifecycle: running → completed, failed, or canceled. It is **awaitable** (you can `await task`) but is not a Promise. It is created with `runTask(work, options)` or via primitives (`run(work)`, `task(work)`). Each task receives an `AbortSignal`; when that signal is aborted, the task transitions to canceled and any registered `onCancel` handlers run before the await rejects.
+- **Task** - An async computation with a lifecycle: running → completed, failed, or canceled. It is **awaitable** (you can `await task`) but is not a Promise. It is created with `runTask(work, options)` or via primitives (`task(work)`, `task(name, work)`). Each task receives an `AbortSignal`; when that signal is aborted, the task transitions to canceled and any registered `onCancel` handlers run before the await rejects.
 - **Structured concurrency** - Work runs inside scopes. When a scope closes (success or failure), all scope-bound tasks are canceled. No orphan tasks unless you explicitly use `spawn`, which is not scope-bound.
 
 ---
@@ -106,10 +106,10 @@ const [a, b] = await Promise.all([
 ```js
 import { sync } from "taskloom";
 
-const [a, b] = await sync(async ({ run }) => {
-  const t1 = run(() => fetch("/api/a").then((r) => r.json()));
-  const t2 = run(() => fetch("/api/b").then((r) => r.json()));
-  return [await t1, await t2];
+const [a, b] = await sync(async ({ task }) => {
+  const t1 = task((signal) => fetch("/api/a", { signal }).then((r) => r.json()));
+  const t2 = task((signal) => fetch("/api/b", { signal }).then((r) => r.json()));
+  return await task.all([t1, t2]);
 });
 ```
 
@@ -117,7 +117,7 @@ const [a, b] = await sync(async ({ run }) => {
 
 ### race - "First result wins; cancel the rest"
 
-Resolves or rejects with the **first** task to settle. As soon as one task settles, the scope is aborted so every other task is canceled. The callback **must start at least one task** (via `run(work)` or `task(work)`); otherwise `race` throws.
+Resolves or rejects with the **first** task to settle. As soon as one task settles, the scope is aborted so every other task is canceled. The callback **must start at least one task** (via `task(work)` or `task(name, work)`); otherwise `race` throws.
 
 **Before:** `Promise.race` returns the first result, but the "losers" keep running.
 
@@ -126,9 +126,9 @@ Resolves or rejects with the **first** task to settle. As soon as one task settl
 ```js
 import { race } from "taskloom";
 
-const first = await race(async ({ run }) => {
-  run(() => fetch("/api/fast").then((r) => r.json()));
-  run(() => fetch("/api/slow").then((r) => r.json()));
+const first = await race(async ({ task }) => {
+  task((signal) => fetch("/api/fast", { signal }).then((r) => r.json()));
+  task((signal) => fetch("/api/slow", { signal }).then((r) => r.json()));
 });
 ```
 
@@ -136,14 +136,14 @@ const first = await race(async ({ run }) => {
 
 ### rush - "First result back, wait for all (no orphans)"
 
-Returns as soon as the **first** task settles, but the scope stays open until **every** started task has settled. Other tasks are **not** canceled; you get the first result and no orphan work. The callback **must start at least one task** (via `run(work)` or `task(work)`); otherwise `rush` throws.
+Returns as soon as the **first** task settles, but the scope stays open until **every** started task has settled. Other tasks are **not** canceled; you get the first result and no orphan work. The callback **must start at least one task** (via `task(work)` or `task(name, work)`); otherwise `rush` throws.
 
 ```js
 import { rush } from "taskloom";
 
-const first = await rush(async ({ run }) => {
-  run(() => fetch("/api/a").then((r) => r.json()));
-  run(() => fetch("/api/b").then((r) => r.json()));
+const first = await rush(async ({ task }) => {
+  task((signal) => fetch("/api/a", { signal }).then((r) => r.json()));
+  task((signal) => fetch("/api/b", { signal }).then((r) => r.json()));
 });
 ```
 
@@ -157,9 +157,9 @@ Use **inside** `runInScope` (or inside another primitive). Starts tasks and **re
 import { branch, runInScope } from "taskloom";
 
 await runInScope(async () => {
-  branch(async ({ run }) => {
-    run(() => fetch("/api/log"));
-    run(() => sendAnalytics());
+  branch(async ({ task }) => {
+    task(() => fetch("/api/log"));
+    task(() => sendAnalytics());
   });
   // Runs immediately, in parallel with branch tasks
   await doOtherWork();
@@ -169,14 +169,25 @@ await runInScope(async () => {
 
 ---
 
-### spawn - "Fire-and-forget with a handle; not scope-bound"
+### spawn - "Run callback in a scope; or fire-and-forget with spawn.task"
 
-Runs a single async work function **without** attaching it to the current scope. The call returns a `Task` immediately; the work runs independently. The task is **not** canceled when the caller’s scope closes. You may optionally `await` the returned `Task`. Callable from sync or async code.
+**`spawn(callback)`** runs the callback with a `TaskloomContext` (`{ task, scope }`) in a new scope. The scope is linked to the parent when called from inside `runInScope` or another primitive, so parent abort cancels the spawn. Returns a `Task<R>` for the callback result.
+
+**`spawn.task(work)`** runs a single async work function **without** attaching it to the current scope. The call returns a `Task` immediately; the work runs independently. The task is **not** canceled when the caller’s scope closes. Callable from sync or async code.
 
 ```js
 import { spawn } from "taskloom";
 
-const task = spawn(() => fetch("/api/notify").then((r) => r.json()));
+// Callback form: same shape as sync/race; scope linked to parent when in scope
+const result = await spawn(async ({ task }) => {
+  const a = await task(async () => 1);
+  const b = await task(async () => 2);
+  return a + b;
+});
+// result === 3
+
+// Fire-and-forget: no scope linkage
+const task = spawn.task(() => fetch("/api/notify").then((r) => r.json()));
 // Optional: await task later, or let it run to completion on its own
 ```
 
@@ -184,28 +195,17 @@ const task = spawn(() => fetch("/api/notify").then((r) => r.json()));
 
 ### spawnScope - "Group fire-and-forget tasks under one scope"
 
-Creates a scope for fire-and-forget work. The callback receives `{ run }`; each `run(work)` spawns a task with no parent scope. Returns when the callback settles; does **not** wait for the spawned tasks. Use to group multiple spawn-style tasks under one logical scope (e.g. for debug or organization).
+Creates a scope for fire-and-forget work. The callback receives `TaskloomContext` (`{ task, scope }`); use `task(work)` to start tasks. Returns when the callback settles; does **not** wait for the spawned tasks.
 
 ```js
 import { spawnScope } from "taskloom";
 
-await spawnScope(async ({ run }) => {
-  run(() => notifyServiceA());
-  run(() => notifyServiceB());
+await spawnScope(async ({ task }) => {
+  task(() => notifyServiceA());
+  task(() => notifyServiceB());
 });
 // Callback has settled; spawned tasks continue independently
 ```
-
----
-
-## Zero-friction API
-
-You can use **either** form inside primitives:
-
-- **Context form:** `sync(async ({ task, scope }) => { await task(work1); await task(work2); })` - full `task` and `scope` object.
-- **Zero-friction form:** `sync(async ({ run }) => { const a = run(work1); const b = run(work2); return [await a, await b]; })` - only `run(work)`; each `run(work)` returns a `Task<T>` and starts one task. Semantics (all run, wait all, first failure cancels rest) are the same.
-
-`run(work)` accepts a function `(signal: AbortSignal) => Promise<T>`. Only that promise-returning work is wrapped as a task; sync code is not.
 
 ---
 
@@ -214,9 +214,22 @@ You can use **either** form inside primitives:
 For logging and debugging you can name tasks:
 
 - `task(work)` - one argument: the work function.
-- `task(name, work)` - two arguments: string name, then work. The name is used in errors, strict-cancellation warnings, and task-tree introspection when debug is enabled.
+- `task(name, work)` - string name first, then work.
+- `task(work, { name: "..." })` - work first, then options with optional `name`.
 
-Task behavior (lifecycle, cancellation, result) is unchanged; only observability differs.
+The name is used in errors, strict-cancellation warnings, and task-tree introspection when debug is enabled. Task behavior (lifecycle, cancellation, result) is unchanged; only observability differs.
+
+---
+
+## Task combinators
+
+On the context `task` object you get Promise-like combinators for already-started tasks:
+
+- **`task.all(tasks)`** - Resolves with an array of results in order when all tasks fulfill; rejects with the first rejection.
+- **`task.race(tasks)`** - Resolves or rejects with the first settlement.
+- **`task.allSettled(tasks)`** - Resolves with an array of settlement results (fulfilled/rejected) in order.
+
+Use them when you have multiple `Task` values (e.g. from `task(work)`) and want to await them together or take the first result.
 
 ---
 
@@ -225,10 +238,10 @@ Task behavior (lifecycle, cancellation, result) is unchanged; only observability
 Inside primitives you get a `task` object that includes:
 
 - **`task.sleep(ms)`** - Promise that resolves after `ms` ms, or rejects if the scope’s signal is aborted first. Scope-bound; no timer leak on cancel.
-- **`task.timeout(ms, work)`** - Runs `work` with a time limit. If `work` completes within `ms`, returns its result. If the limit elapses first, **aborts the scope** (canceling all scope-bound children) and rejects with a timeout error.
-- **`task.retry(fn, options)`** - Invokes `fn` and on failure retries with configurable `retries` and `backoff` (`'fixed'` or `'exponential'`). Respects scope cancellation: if the scope is aborted, retry stops and the Promise rejects.
+- **`task.timeout(ms, work)`** - Runs `work(signal)` with a time limit. The work function receives the scope's **AbortSignal** so you can pass it to `fetch` or other cancelable APIs. If the limit elapses first, the scope is aborted and the Promise rejects with a timeout error.
+- **`task.retry(fn, options)`** - Invokes `fn(signal)` on each attempt; receives the scope's **AbortSignal**. On failure retries with configurable `retries` and `backoff` (`'fixed'` or `'exponential'`). If the scope is aborted, retry stops and the Promise rejects.
 
-These are available wherever you receive `PrimitivesContext` (e.g. inside `sync`, `race`, `rush`, `branch`). Options for `retry` are typed (e.g. `RetryOptions`, `RetryBackoff`) and exported from the package.
+These are available wherever you receive `TaskloomContext` (e.g. inside `sync`, `race`, `rush`, `branch`, `spawn`). Options for `retry` are typed (e.g. `RetryOptions`, `RetryBackoff`) and exported from the package.
 
 ---
 
@@ -255,7 +268,7 @@ Use these when you need explicit scope boundaries or to run a single task with a
 - **`enableTaskDebug()`** - Enables collection of the live scope and task tree for subsequent execution. When disabled, no extra allocation or work (zero cost in production). Process-wide; Node 22+ built-ins only.
 - **`subscribeTaskDebug(callback)`** - Registers a subscriber for realtime debug events (scope opened/closed, task registered/updated). Returns an unsubscribe function. When debug is enabled, the callback is invoked synchronously with event payloads. Subscriber throws are caught and logged so they don’t break the core.
 
-When debug is enabled, the task tree can show scope IDs, task IDs, optional names, and status. With a subscriber, you can build live visualizations or logs. Inferred task names (from the callsite of `run(work)`) may be used when debug is enabled.
+When debug is enabled, the task tree can show scope IDs, task IDs, optional names, and status. With a subscriber, you can build live visualizations or logs.
 
 ---
 
@@ -283,7 +296,7 @@ When strict mode is off, no checks run and behavior is unchanged. Options (e.g. 
 
 **Scope and task:** `runInScope`, `runTask`, `Scope`, `Task`, `TaskStatus`, `RunTaskOptions`
 
-**Context and callback types:** `PrimitivesContext`, `PrimitivesCallback`, `ZeroFrictionSyncContext`, `ZeroFrictionSyncCallback`, `SyncContext`, `SpawnContext`
+**Context and callback types:** `TaskloomContext`, `SyncCallback`, `TaskOptions`, `UnwrapTasks`, `SettledTasks`
 
 **Debug:** `enableTaskDebug`, `subscribeTaskDebug`, `TaskDebugEvent`
 
@@ -311,7 +324,7 @@ From the repo root. See **examples/README.md** for the full list (sync, race, ru
 
 ## Requirements
 
-- **Node.js 22+**
+- **Node.js 22+** or **browser** - the same package works in both; async context uses native `AsyncLocalStorage` in Node and an in-library ponyfill in the browser.
 - **ESM** - package is `"type": "module"`; use `import` from `"taskloom"`.
 - **Zero runtime dependencies** - only `devDependencies` for build and tests.
 

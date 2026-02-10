@@ -7,9 +7,9 @@ import { rush } from "taskloom";
 const delay = (ms, value) =>
   new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
-const first = await rush(async ({ run }) => {
-  run(() => delay(100, "second"));
-  run(() => delay(20, "first"));
+const first = await rush(async ({ task }) => {
+  task(() => delay(100, "second"));
+  task(() => delay(20, "first"));
 });
 
 console.log("rush first:", first);
