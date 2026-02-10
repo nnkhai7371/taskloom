@@ -184,3 +184,84 @@ export function createRetry(signal: AbortSignal): <T>(
   return <T>(fn: (signal: AbortSignal) => Promise<T>, options: RetryOptions): Promise<T> =>
     retry(fn, options, signal);
 }
+
+/** Options for the concurrency limiter. */
+export type LimiterOptions = {
+  /** Maximum number of concurrent executions (required, must be >= 1). */
+  concurrency: number;
+  /** When true (default), queued work is rejected when the scope's signal aborts. */
+  cancelQueuedOnAbort?: boolean;
+};
+
+/** A limiter function: accepts work(signal) => Promise<T> and returns Promise<T>. */
+export type Limiter = <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+
+/**
+ * Creates a concurrency limiter bound to the given AbortSignal. Validates concurrency >= 1 (throws synchronously otherwise).
+ * Uses a FIFO queue; when signal aborts, queued work is rejected if cancelQueuedOnAbort is true (default).
+ * Running work receives the same signal. If the signal is already aborted when the limiter is invoked, the returned Promise rejects immediately without running work.
+ *
+ * @param signal - AbortSignal (e.g. scope.signal); when aborted, queued work is rejected (when cancelQueuedOnAbort) and running work receives it
+ * @param options - concurrency (required), cancelQueuedOnAbort (optional, default true)
+ * @returns A limiter function that accepts work(signal) => Promise<T> and returns Promise<T>
+ */
+export function createLimiter(signal: AbortSignal, options: LimiterOptions): Limiter {
+  const { concurrency, cancelQueuedOnAbort = true } = options;
+  if (typeof concurrency !== "number" || concurrency < 1 || Math.floor(concurrency) !== concurrency) {
+    throw new Error(`Concurrency must be an integer >= 1, got: ${concurrency}`);
+  }
+  type QueueItem<T> = {
+    work: (signal: AbortSignal) => Promise<T>;
+    resolve: (value: T) => void;
+    reject: (reason: unknown) => void;
+  };
+  const queue: QueueItem<unknown>[] = [];
+  let active = 0;
+
+  function runNext(): void {
+    if (active >= concurrency || queue.length === 0) return;
+    if (signal.aborted && cancelQueuedOnAbort) {
+      const reason = signal.reason;
+      while (queue.length > 0) {
+        const item = queue.shift()!;
+        item.reject(reason);
+      }
+      return;
+    }
+    const item = queue.shift()!;
+    active++;
+    Promise.resolve(item.work(signal))
+      .then(
+        (value) => {
+          item.resolve(value);
+        },
+        (err) => {
+          item.reject(err);
+        },
+      )
+      .finally(() => {
+        active--;
+        runNext();
+      });
+  }
+
+  if (cancelQueuedOnAbort) {
+    signal.addEventListener("abort", () => {
+      const reason = signal.reason;
+      while (queue.length > 0) {
+        const item = queue.shift()!;
+        item.reject(reason);
+      }
+    });
+  }
+
+  return function limit<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(signal.reason);
+    }
+    return new Promise<T>((resolve, reject) => {
+      queue.push({ work, resolve, reject } as QueueItem<unknown>);
+      runNext();
+    });
+  };
+}

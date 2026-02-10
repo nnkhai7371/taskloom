@@ -25,6 +25,7 @@ Examples are `.mjs` and import `taskloom`, which resolves to the built `dist/` w
 | File | Primitive | Description |
 |------|-----------|-------------|
 | `sync-basic.mjs` | `sync` | Run tasks in parallel; first failure cancels the rest. |
+| `limit-batch.mjs` | `task.limit` | Cap concurrency for batch work (e.g. API calls); at most N at a time. |
 | `race-basic.mjs` | `race` | First result wins; other tasks are canceled. |
 | `rush-basic.mjs` | `rush` | First result returned; scope waits for all (no orphans). |
 | `branch-basic.mjs` | `branch` | Background work in a scope; canceled when scope closes. |

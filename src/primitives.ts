@@ -13,11 +13,19 @@ import {
   type Scope,
   type ScopeStorage,
 } from "./scope.js";
-import { pushScope, popScope, isTaskDebugEnabled, getCallerName } from "./debug.js";
-import { createSleep, createTimeout, createRetry, type RetryOptions } from "./helpers.js";
+import { pushScope, popScope } from "./debug.js";
+import {
+  createSleep,
+  createTimeout,
+  createRetry,
+  createLimiter,
+  type RetryOptions,
+  type LimiterOptions,
+} from "./helpers.js";
 import { strictModeWarn } from "./strict-mode.js";
 
-export type { RetryOptions, RetryBackoff } from "./helpers.js";
+export type { RetryOptions, RetryBackoff, LimiterOptions } from "./helpers.js";
+export { createLimiter } from "./helpers.js";
 
 /** Options for task when using the form task(work, options). */
 export type TaskOptions = { name?: string };
@@ -40,7 +48,7 @@ export type SettledTasks<T extends readonly Task<unknown>[]> = {
 /**
  * Context passed to primitive callbacks (sync, race, rush, branch, spawn). Use `task(work)`,
  * `task(name, work)`, or `task(work, { name })` to start tasks tied to the current scope; they are canceled when the scope closes.
- * Helpers: task.sleep(ms), task.timeout(ms, work), task.retry(fn, options), task.all, task.race, task.allSettled.
+ * Helpers: task.sleep(ms), task.timeout(ms, work), task.retry(fn, options), task.limit(concurrency, options?), task.all, task.race, task.allSettled.
  */
 export type TaskloomContext = {
   task: {
@@ -50,6 +58,14 @@ export type TaskloomContext = {
     sleep(ms: number): Promise<void>;
     timeout<T>(ms: number, work: (signal: AbortSignal) => Promise<T>): Promise<T>;
     retry<T>(fn: (signal: AbortSignal) => Promise<T>, options: RetryOptions): Promise<T>;
+    /**
+     * Returns a concurrency limiter that runs at most `concurrency` work functions at a time.
+     * Usage: const limit = task.limit(3); await limit(async (signal) => { ... });
+     * Work receives the scope's AbortSignal (e.g. for fetch). When the scope aborts, queued work is rejected if cancelQueuedOnAbort is true (default).
+     * @param concurrency - Max concurrent runs (integer >= 1)
+     * @param options - Optional: cancelQueuedOnAbort (default true) to reject queued work on scope abort
+     */
+    limit(concurrency: number, options?: Partial<LimiterOptions>): <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
     all<T extends readonly Task<unknown>[]>(tasks: T): Promise<UnwrapTasks<T>>;
     race<T>(tasks: readonly Task<T>[]): Promise<T>;
     allSettled<T extends readonly Task<unknown>[]>(tasks: T): Promise<SettledTasks<T>>;
@@ -100,6 +116,9 @@ function attachHelpersToTask(
     sleep: createSleep(scope.signal),
     timeout: createTimeout(scope, scope.signal),
     retry: createRetry(scope.signal),
+    limit(concurrency: number, options?: Partial<LimiterOptions>) {
+      return createLimiter(scope.signal, { concurrency, ...options });
+    },
     all<T extends readonly Task<unknown>[]>(tasks: T): Promise<UnwrapTasks<T>> {
       return Promise.all(tasks) as Promise<UnwrapTasks<T>>;
     },

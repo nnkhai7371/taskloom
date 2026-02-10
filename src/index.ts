@@ -30,6 +30,8 @@ export {
   type SettledTasks,
   type RetryOptions,
   type RetryBackoff,
+  createLimiter,
+  type LimiterOptions,
 } from "./primitives.js";
 export {
   enableTaskDebug,

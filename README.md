@@ -240,8 +240,9 @@ Inside primitives you get a `task` object that includes:
 - **`task.sleep(ms)`** - Promise that resolves after `ms` ms, or rejects if the scope’s signal is aborted first. Scope-bound; no timer leak on cancel.
 - **`task.timeout(ms, work)`** - Runs `work(signal)` with a time limit. The work function receives the scope's **AbortSignal** so you can pass it to `fetch` or other cancelable APIs. If the limit elapses first, the scope is aborted and the Promise rejects with a timeout error.
 - **`task.retry(fn, options)`** - Invokes `fn(signal)` on each attempt; receives the scope's **AbortSignal**. On failure retries with configurable `retries` and `backoff` (`'fixed'` or `'exponential'`). If the scope is aborted, retry stops and the Promise rejects.
+- **`task.limit(concurrency, options?)`** - Returns a limiter function that runs at most `concurrency` work functions at a time. Use for batch API calls or I/O to avoid unbounded concurrency. Call the returned function with `work(signal) => Promise<T>`; work receives the scope's **AbortSignal**. When the scope aborts, queued work is rejected if `cancelQueuedOnAbort` is true (default). Options: `{ cancelQueuedOnAbort?: boolean }`. You can also use **`createLimiter(signal, options)`** directly with a scope signal and `LimiterOptions` (concurrency required).
 
-These are available wherever you receive `TaskloomContext` (e.g. inside `sync`, `race`, `rush`, `branch`, `spawn`). Options for `retry` are typed (e.g. `RetryOptions`, `RetryBackoff`) and exported from the package.
+These are available wherever you receive `TaskloomContext` (e.g. inside `sync`, `race`, `rush`, `branch`, `spawn`). Options for `retry` are typed (e.g. `RetryOptions`, `RetryBackoff`); the limiter uses `LimiterOptions`. All are exported from the package.
 
 ---
 
@@ -302,7 +303,7 @@ When strict mode is off, no checks run and behavior is unchanged. Options (e.g. 
 
 **Strict:** `enableStrictMode`, `StrictModeError`, `StrictModeOptions`, `withStrictCancellation`, `StrictCancellationOptions`
 
-**Helpers (types):** `RetryOptions`, `RetryBackoff`
+**Helpers (types and factory):** `RetryOptions`, `RetryBackoff`, `LimiterOptions`, `createLimiter`
 
 All of the above are exported from the package entry; import from `"taskloom"` only. Internal helpers are not re-exported. Public symbols are documented with JSDoc at their declaration site so IDE tooltips show behavior and semantics.
 
@@ -315,10 +316,11 @@ Runnable examples and a short get-started guide live in **[examples/](examples/)
 ```bash
 node examples/sync-basic.mjs
 node examples/race-basic.mjs
+node examples/limit-batch.mjs
 node examples/debug-mode.mjs
 ```
 
-From the repo root. See **examples/README.md** for the full list (sync, race, rush, branch, spawn, scope-cancel, nested-primitives, debug-mode, strict-mode).
+From the repo root. See **examples/README.md** for the full list (sync, race, rush, branch, spawn, limit-batch, scope-cancel, nested-primitives, debug-mode, strict-mode).
 
 ---
 

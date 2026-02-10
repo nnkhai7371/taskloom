@@ -3,7 +3,18 @@
  * in-process mocks—no real I/O or external services (per project conventions).
  */
 import { describe, it, expect, vi } from "vitest";
-import { sync, race, rush, branch, spawn, spawnScope, runInScope, type Task, type CancelReason } from "taskloom";
+import {
+  sync,
+  race,
+  rush,
+  branch,
+  spawn,
+  spawnScope,
+  runInScope,
+  createLimiter,
+  type Task,
+  type CancelReason,
+} from "taskloom";
 
 describe("sync", () => {
   it("resolves when all tasks complete", async () => {
@@ -1022,6 +1033,92 @@ describe("task.timeout", () => {
         });
       }),
     ).rejects.toMatchObject({ message: "Timeout after 80 ms", name: "TimeoutError" });
+  });
+});
+
+describe("task.limit", () => {
+  it("enforces at most N concurrent runs", async () => {
+    const concurrency = 3;
+    let active = 0;
+    let maxActive = 0;
+    const delay = 20;
+    const result = await sync(async ({ task }) => {
+      const limit = task.limit(concurrency);
+      const run = async (id: number) => {
+        return await limit(async () => {
+          active++;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((r) => setTimeout(r, delay));
+          active--;
+          return id;
+        });
+      };
+      const promises = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((id) => run(id));
+      const values = await Promise.all(promises);
+      return { values, maxActive };
+    });
+    expect(result.maxActive).toBe(concurrency);
+    expect(result.values).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("rejects queued work when scope aborts (cancelQueuedOnAbort true)", async () => {
+    const { runInScope } = await import("taskloom");
+    const { createContext } = await import("../src/primitives.js");
+    const rejected: unknown[] = [];
+    await runInScope(async (scope) => {
+      const ctx = createContext(scope);
+      const limit = ctx.task.limit(2);
+      const slow = limit(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        return 1;
+      });
+      limit(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        return 2;
+      });
+      const queued = limit(async () => 3);
+      queued.catch((r) => rejected.push(r));
+      await new Promise((r) => setTimeout(r, 10));
+      scope.abort({ type: "user-abort" });
+      await slow.then(undefined, () => {});
+    });
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]).toMatchObject({ type: "user-abort" });
+  });
+
+  it("creating a limiter with concurrency < 1 throws synchronously", () => {
+    const controller = new AbortController();
+    expect(() => createLimiter(controller.signal, { concurrency: 0 })).toThrow(
+      /Concurrency must be an integer >= 1/,
+    );
+    expect(() => createLimiter(controller.signal, { concurrency: 0.5 })).toThrow(
+      /Concurrency must be an integer >= 1/,
+    );
+  });
+
+  it("invoking the limiter when signal is already aborted rejects immediately without running work", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("already aborted"));
+    const scope = { signal: controller.signal, abort: () => controller.abort() };
+    const { createContext } = await import("../src/primitives.js");
+    const ctx = createContext(scope as import("taskloom").Scope);
+    const limit = ctx.task.limit(2);
+    const work = vi.fn().mockResolvedValue(1);
+    await expect(limit(work)).rejects.toThrow("already aborted");
+    expect(work).not.toHaveBeenCalled();
+  });
+
+  it("running work receives the scope AbortSignal", async () => {
+    const receivedSignals: AbortSignal[] = [];
+    await sync(async ({ task }) => {
+      const limit = task.limit(2);
+      await limit(async (signal) => {
+        receivedSignals.push(signal);
+        return 1;
+      });
+    });
+    expect(receivedSignals.length).toBe(1);
+    expect(receivedSignals[0]).toBeInstanceOf(AbortSignal);
   });
 });
 
