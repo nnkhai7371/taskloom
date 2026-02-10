@@ -144,8 +144,14 @@ export function runTask<T>(
     for (const h of cancelHandlers) {
       try {
         h(reason as CancelReason | undefined);
-      } catch {
-        // Run remaining handlers; design: one throwing handler does not stop others
+      } catch (err) {
+        if (isStrictModeEnabled()) {
+          strictModeWarn(
+            `Task "${taskName ?? "anonymous"}": onCancel handler threw: ${err}`,
+          );
+        } else {
+          console.error("[taskloom] onCancel handler threw:", err);
+        }
       }
     }
     rejectThenable(withName(reason));
@@ -193,8 +199,14 @@ export function runTask<T>(
         if (status === "canceled") {
           try {
             handler(error as CancelReason | undefined);
-          } catch {
-            // Invoke handler once; ignore errors per onCancel semantics
+          } catch (err) {
+            if (isStrictModeEnabled()) {
+              strictModeWarn(
+                `Task "${taskName ?? "anonymous"}": onCancel handler threw: ${err}`,
+              );
+            } else {
+              console.error("[taskloom] onCancel handler threw:", err);
+            }
           }
           return;
         }

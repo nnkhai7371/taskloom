@@ -22,7 +22,7 @@ import {
   type RetryOptions,
   type LimiterOptions,
 } from "./helpers.js";
-import { strictModeWarn } from "./strict-mode.js";
+import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
 
 export type { RetryOptions, RetryBackoff, LimiterOptions } from "./helpers.js";
 export { createLimiter } from "./helpers.js";
@@ -140,7 +140,11 @@ export function createContext(scope: Scope): TaskloomContext {
   const taskFn = (
     first: string | ((signal: AbortSignal) => Promise<unknown>),
     second?: (signal: AbortSignal) => Promise<unknown> | TaskOptions,
-  ) => taskImpl(scope, first, second);
+  ) => {
+    const t = taskImpl(scope, first, second);
+    attachRejectionHandler(t);
+    return t;
+  };
   return {
     task: attachHelpersToTask(scope, taskFn),
     scope,
@@ -335,7 +339,11 @@ export function branch(callback: SyncCallback<void>): Promise<void> {
     pushScope("branch");
     try {
       const { ctx } = createSyncContext(scope);
-      callback(ctx).then(undefined, () => {}); // avoid unhandled rejection from branch body
+      callback(ctx).then(undefined, (err) => {
+        if (isStrictModeEnabled()) {
+          strictModeWarn(`branch: callback threw error: ${err}`);
+        }
+      });
       return Promise.resolve();
     } finally {
       popScope();

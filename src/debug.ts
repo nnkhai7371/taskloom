@@ -108,6 +108,9 @@ export class TaskloomDebugger {
 
   #printCompletedScope(scope: MirrorScope): void {
     if (this.#printedRootIds.has(scope.id)) return;
+    if (this.#printedRootIds.size > 10_000) {
+      this.#printedRootIds.clear();
+    }
     const text = this.#formatMirrorTree(scope);
     if (text) {
       this.#sink("debug", text);
@@ -317,9 +320,16 @@ export class TaskloomDebugger {
     const line = lines[frameIndex];
     if (!line || typeof line !== "string") return undefined;
     const trimmed = line.trim();
-    const atMatch = /^\s*at\s+(.+)$/.exec(trimmed);
-    const frame = atMatch ? atMatch[1] : trimmed;
-    return frame || undefined;
+    // V8/Node: "at functionName (file:line:col)" or "at file:line:col"
+    let match = /^\s*at\s+(.+)$/.exec(trimmed);
+    if (match) return match[1];
+    // Safari: "functionName@file:line:col"
+    match = /^([^@]+)@/.exec(trimmed);
+    if (match) return match[1];
+    // Firefox: "@file:line:col" or "functionName@file:line:col"
+    match = /^([^@]*)@/.exec(trimmed);
+    if (match?.[1]) return match[1];
+    return trimmed || undefined;
   }
 
   pushScope(type: ScopeType): void {
