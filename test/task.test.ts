@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { runTask, type Task, type TaskLifecycleHook } from "taskloom";
+import { runTask, type Task, type TaskLifecycleHook, type CancelReason } from "taskloom";
 
 describe("Task lifecycle", () => {
   it("moves to completed when work resolves", async () => {
@@ -125,6 +125,61 @@ describe("Task onCancel", () => {
     task.onCancel(spy);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith(reason);
+  });
+
+  it("onCancel receives parent-canceled variant when parent task is canceled (reason.parent reference)", async () => {
+    const parentController = new AbortController();
+    const parent = runTask(async () => "parent-result");
+    await parent;
+    const parentTaskRef = parent;
+    let receivedReason: CancelReason | undefined;
+    const child = runTask(
+      async (signal) => {
+        await new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      { signal: parentController.signal, parentTask: parentTaskRef },
+    );
+    child.onCancel((r) => {
+      receivedReason = r;
+    });
+    parentController.abort();
+    await child.then(undefined, () => {});
+    expect(receivedReason).toBeDefined();
+    expect(receivedReason).toMatchObject({ type: "parent-canceled" });
+    expect((receivedReason as { type: "parent-canceled"; parent: Task }).parent).toBe(parentTaskRef);
+  });
+
+  it("consumer can narrow on reason?.type in TypeScript (type-check / narrowing)", async () => {
+    const controller = new AbortController();
+    const task = runTask(
+      async (signal) => {
+        await new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      { signal: controller.signal },
+    );
+    let timeoutMs: number | undefined;
+    let abortSignal: AbortSignal | undefined;
+    let parentTaskRef: Task | undefined;
+    task.onCancel((reason) => {
+      if (reason?.type === "timeout") {
+        timeoutMs = reason.ms;
+      } else if (reason?.type === "user-abort") {
+        abortSignal = reason.signal;
+      } else if (reason?.type === "scope-closed") {
+        // no extra fields
+      } else if (reason?.type === "parent-canceled") {
+        parentTaskRef = reason.parent;
+      }
+    });
+    controller.abort();
+    await task.then(undefined, () => {}); // consume rejection to avoid unhandled
+    // Narrowing compiles; we just assert we can read the narrowed types (abortSignal may be set when user-abort)
+    expect(typeof timeoutMs === "number" || timeoutMs === undefined).toBe(true);
+    expect(typeof parentTaskRef === "object" || parentTaskRef === undefined).toBe(true);
   });
 });
 

@@ -3,7 +3,7 @@
  * in-process mocks—no real I/O or external services (per project conventions).
  */
 import { describe, it, expect, vi } from "vitest";
-import { sync, race, rush, branch, spawn, spawnScope, runInScope, type Task } from "taskloom";
+import { sync, race, rush, branch, spawn, spawnScope, runInScope, type Task, type CancelReason } from "taskloom";
 
 describe("sync (zero-friction run)", () => {
   it("zero-friction sync resolves when all run(work) tasks complete", async () => {
@@ -35,7 +35,7 @@ describe("sync (zero-friction run)", () => {
       }),
     ).rejects.toBe(err);
     expect(otherTask!.status).toBe("canceled");
-    await expect(otherTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(otherTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("onCancel on a task started via run(work) runs when scope is aborted (e.g. sibling fails)", async () => {
@@ -106,7 +106,7 @@ describe("sync", () => {
       }),
     ).rejects.toBe(err);
     expect(otherTask!.status).toBe("canceled");
-    await expect(otherTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(otherTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("onCancel on sibling runs when one fails", async () => {
@@ -216,7 +216,7 @@ describe("race", () => {
     ).rejects.toBe(err);
   });
 
-  it("cancels non-winning tasks; awaiting them rejects with AbortError", async () => {
+  it("cancels non-winning tasks; awaiting them rejects with scope-closed reason", async () => {
     let loser: Task<number> | undefined;
     const winner = await race<number>(async ({ task }) => {
       task(async () => {
@@ -234,7 +234,7 @@ describe("race", () => {
     });
     expect(winner).toBe(42);
     expect(loser!.status).toBe("canceled");
-    await expect(loser!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(loser!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("first rejection in race rejects with that error and other tasks are canceled (scope aborted)", async () => {
@@ -353,7 +353,7 @@ describe("cancellation (scope abort)", () => {
       });
     });
     expect(childTask!.status).toBe("canceled");
-    await expect(childTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(childTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("onCancel is invoked when scope is aborted", async () => {
@@ -375,6 +375,22 @@ describe("cancellation (scope abort)", () => {
     });
     await taskSettled!;
     expect(cleanupRan).toEqual(["onCancel"]);
+  });
+
+  it("onCancel receives scope-closed variant when scope closes (e.g. race first settles)", async () => {
+    let loserReason: CancelReason | undefined;
+    const first = await race<string>(async ({ run }) => {
+      run(async (signal) => {
+        await new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }).onCancel((r) => {
+        loserReason = r;
+      });
+      return await run(async () => "winner");
+    });
+    expect(first).toBe("winner");
+    expect(loserReason).toMatchObject({ type: "scope-closed" });
   });
 });
 
@@ -545,7 +561,7 @@ describe("nested primitives", () => {
           });
         }),
       ).rejects.toBe(err);
-      await expect(innerTask!).rejects.toMatchObject({ name: "AbortError" });
+      await expect(innerTask!).rejects.toMatchObject({ type: "scope-closed" });
       expect(innerTask!.status).toBe("canceled");
     });
   });
@@ -606,7 +622,7 @@ describe("nested primitives", () => {
         }),
       ).rejects.toBe(err);
       for (const t of innerTasks) {
-        await expect(t).rejects.toMatchObject({ name: "AbortError" });
+        await expect(t).rejects.toMatchObject({ type: "scope-closed" });
         expect(t.status).toBe("canceled");
       }
     });
@@ -660,7 +676,7 @@ describe("nested primitives", () => {
           });
         }),
       ).rejects.toBe(err);
-      await expect(innerTask!).rejects.toMatchObject({ name: "AbortError" });
+      await expect(innerTask!).rejects.toMatchObject({ type: "scope-closed" });
       expect(innerTask!.status).toBe("canceled");
     });
   });
@@ -708,7 +724,7 @@ describe("nested primitives", () => {
           });
         }),
       ).rejects.toBe(err);
-      await expect(innerBranchTask!).rejects.toMatchObject({ name: "AbortError" });
+      await expect(innerBranchTask!).rejects.toMatchObject({ type: "scope-closed" });
       expect(innerBranchTask!.status).toBe("canceled");
     });
   });
@@ -915,7 +931,7 @@ describe("task.sleep", () => {
         setTimeout(() => scope.abort(), 50);
         return ctx.task.sleep(1000);
       }),
-    ).rejects.toMatchObject({ name: "AbortError" });
+    ).rejects.toMatchObject({ type: "user-abort" });
   });
 
   it("rejects immediately when scope is already aborted", async () => {
@@ -965,8 +981,31 @@ describe("task.timeout", () => {
           return 1;
         });
       }),
-    ).rejects.toMatchObject({ name: /TimeoutError|AbortError/ });
+    ).rejects.toMatchObject({ type: "timeout", ms: 100 });
     expect(childTask!.status).toBe("canceled");
+  });
+
+  it("onCancel receives timeout variant when task times out (reason.type === 'timeout', reason.ms)", async () => {
+    let receivedReason: CancelReason | undefined;
+    await expect(
+      sync(async ({ task }) => {
+        await task.timeout(80, async () => {
+          const t = task(
+            async (signal) =>
+              new Promise<never>((_, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+              }),
+          );
+          t.onCancel((r) => {
+            receivedReason = r;
+          });
+          await new Promise((r) => setTimeout(r, 200));
+          return 1;
+        });
+      }),
+    ).rejects.toMatchObject({ type: "timeout", ms: 80 });
+    expect(receivedReason).toBeDefined();
+    expect(receivedReason).toMatchObject({ type: "timeout", ms: 80 });
   });
 
   it("nested task.timeout: inner requested 200ms is capped by parent remaining ~50ms and rejects on timeout", async () => {
@@ -1043,7 +1082,7 @@ describe("task.retry", () => {
         setTimeout(() => scope.abort(), 30);
         return ctx.task.retry(fn, { retries: 5, backoff: "exponential", initialDelayMs: 100 });
       }),
-    ).rejects.toMatchObject({ name: "AbortError" });
+    ).rejects.toMatchObject({ type: "user-abort" });
     expect(fn).toHaveBeenCalledTimes(1);
   });
 

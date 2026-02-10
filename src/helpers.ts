@@ -2,6 +2,7 @@
  * Opinionated dev helpers: sleep, timeout, retry. Use only Node built-ins; respect AbortSignal and scope.
  */
 
+import type { CancelReason } from "./task.js";
 import {
   getCurrentScopeStorage,
   getScopeDeadlineRemainingMs,
@@ -45,7 +46,10 @@ export function createSleep(signal: AbortSignal): (ms: number) => Promise<void> 
 }
 
 /** Scope-like type for timeout: needs signal and abort so that expiry can cancel children. */
-export type ScopeLike = { readonly signal: AbortSignal; abort(): void };
+export type ScopeLike = {
+  readonly signal: AbortSignal;
+  abort(reason?: CancelReason | unknown): void;
+};
 
 /**
  * Runs async work with a time limit. If work completes within the effective limit, returns its result.
@@ -67,7 +71,7 @@ export async function runWithTimeout<T>(
 ): Promise<T> {
   const remainingMs = getScopeDeadlineRemainingMs();
   const effectiveMs =
-    remainingMs != null
+    remainingMs  && remainingMs >= 0
       ? Math.min(ms, Math.max(0, remainingMs))
       : ms;
 
@@ -77,7 +81,7 @@ export async function runWithTimeout<T>(
   let timeoutId: ReturnType<typeof setTimeout> | undefined = undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      scope.abort();
+      scope.abort({ type: "timeout", ms: effectiveMs });
       reject(timeoutError);
     }, effectiveMs);
   });

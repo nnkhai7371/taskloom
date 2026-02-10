@@ -4,7 +4,7 @@
  */
 
 import { storage, type AsyncContextStorage } from "./async-context.js";
-import type { Task } from "./task.js";
+import type { CancelReason, Task } from "./task.js";
 import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
 
 /**
@@ -13,8 +13,8 @@ import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
  */
 export type Scope = {
   readonly signal: AbortSignal;
-  /** Aborts the scope so all tasks using scope.signal are canceled. Optional reason is available as signal.reason and to onCancel handlers. */
-  abort(reason?: unknown): void;
+  /** Aborts the scope so all tasks using scope.signal are canceled. Optional reason is available as signal.reason and to onCancel handlers. Pass a {@link CancelReason} or custom value; when omitted, handlers receive a user-abort reason. */
+  abort(reason?: CancelReason | unknown): void;
 };
 
 /** @internal */
@@ -43,7 +43,7 @@ const scopeStorage = storage as AsyncContextStorage<ScopeStorage>;
  * @internal
  */
 export function hasCurrentScope(): boolean {
-  return scopeStorage.getStore() != null;
+  return !!scopeStorage.getStore();
 }
 
 /**
@@ -71,7 +71,7 @@ export function getCurrentScopeStorage(): ScopeStorage | undefined {
  */
 export function getScopeDeadlineRemainingMs(): number | undefined {
   const store = scopeStorage.getStore();
-  if (store?.deadlineMs == null) return undefined;
+  if (!store?.deadlineMs) return undefined;
   return Math.max(0, store.deadlineMs - Date.now());
 }
 
@@ -138,8 +138,10 @@ function createScope(): { scope: Scope; controller: AbortController } {
   const controller = new AbortController();
   const scope: Scope = {
     signal: controller.signal,
-    abort(reason?: unknown): void {
-      controller.abort(reason);
+    abort(reason?: CancelReason | unknown): void {
+      controller.abort(
+        reason ?? { type: "user-abort", signal: controller.signal },
+      );
     },
   };
   return { scope, controller };
@@ -167,7 +169,7 @@ export async function runInScope<T>(
   const store: ScopeStorage = {
     scope,
     entries,
-    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+    ...(parentStore?.deadlineMs && { deadlineMs: parentStore.deadlineMs }),
   };
   try {
     return await scopeStorage.run(store, async () => {
@@ -175,7 +177,7 @@ export async function runInScope<T>(
     });
   } finally {
     warnOrphanTasksIfStrict(entries);
-    controller.abort(undefined);
+    controller.abort({ type: "scope-closed" });
   }
 }
 
@@ -210,14 +212,14 @@ export async function withStrictCancellation<T>(
     scope,
     entries,
     pendingWorkPromises,
-    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+    ...(parentStore?.deadlineMs && { deadlineMs: parentStore.deadlineMs }),
   };
 
   return await scopeStorage.run(store, async () => {
     try {
       return await fn(scope);
     } finally {
-      controller.abort(undefined);
+      controller.abort({ type: "scope-closed" });
       if (process.env.NODE_ENV !== "production") {
         const abortedAt = Date.now();
         const timerId = setTimeout(() => {

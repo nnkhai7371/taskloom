@@ -3,7 +3,7 @@
  * Built on Task and Scope; all except spawn use scope.signal for cancellation.
  */
 
-import { runTask, type Task } from "./task.js";
+import { runTask, type CancelReason, type Task } from "./task.js";
 import {
   getCurrentScope,
   getCurrentScopeStorage,
@@ -68,14 +68,14 @@ function taskImpl<T>(
 ): Task<T> {
   const work = typeof first === "string" ? second! : first;
   const name = typeof first === "string" ? first : undefined;
-  return runTask(work, name == null ? { signal: scope.signal } : { signal: scope.signal, name });
+  return runTask(work, name ? { signal: scope.signal, name } : { signal: scope.signal });
 }
 
 function makeRun(scope: Scope, tasks: Task<unknown>[]): ZeroFrictionSyncContext["run"] {
   return <T>(work: (signal: AbortSignal) => Promise<T>): Task<T> => {
     const name = isTaskDebugEnabled() ? getCallerName(2) : undefined;
     const t =
-      name != null && name !== ""
+      name && name !== ""
         ? taskImpl(scope, name, work)
         : taskImpl(scope, work);
     attachRejectionHandler(t);
@@ -198,7 +198,7 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
       const controller = new AbortController();
       const scope: Scope = {
         signal: controller.signal,
-        abort: (reason?: unknown) => controller.abort(reason),
+        abort: (reason?: CancelReason | unknown) => controller.abort(reason),
       };
       const parentScope = getCurrentScope();
       if (parentScope) {
@@ -213,7 +213,7 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
       const store: ScopeStorage = {
         scope,
         entries,
-        ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+        ...(parentStore?.deadlineMs && { deadlineMs: parentStore.deadlineMs }),
       };
       const { tasks, ctx } = createSyncContext(scope);
       return await runWithScopeStorage(store, async () => {
@@ -224,7 +224,7 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
         return Promise.race(tasks).then(
           (value) => {
             warnOrphanTasksIfStrict(entries);
-            controller.abort(undefined);
+            controller.abort({ type: "scope-closed" });
             tasks.forEach((t) => t.then(undefined, () => {}));
             return value as T;
           },
@@ -277,7 +277,7 @@ export function rush<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
  */
 export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<void> {
   const parentScope = getCurrentScope();
-  if (parentScope == null) {
+  if (!parentScope) {
     // No parent: keep current behavior — scope closes when callback settles to avoid leaking.
     strictModeWarn(
       "taskloom/branch: branch() was called without a parent scope. For intended semantics (next expression runs in parallel; branch tasks canceled when enclosing context completes), use branch inside runInScope or another primitive.",
@@ -298,7 +298,7 @@ export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<v
   const controller = new AbortController();
   const scope: Scope = {
     signal: controller.signal,
-    abort: (reason?: unknown) => controller.abort(reason),
+    abort: (reason?: CancelReason | unknown) => controller.abort(reason),
   };
   parentScope.signal.addEventListener(
     "abort",
@@ -313,7 +313,7 @@ export function branch(callback: (ctx: SyncContext) => Promise<void>): Promise<v
   const store: ScopeStorage = {
     scope,
     entries,
-    ...(parentStore?.deadlineMs != null && { deadlineMs: parentStore.deadlineMs }),
+    ...(parentStore?.deadlineMs && { deadlineMs: parentStore.deadlineMs }),
   };
   return runWithScopeStorage(store, () => {
     pushScope("branch");
@@ -368,7 +368,7 @@ export function spawnScope(
         const name = isTaskDebugEnabled() ? getCallerName(2) : undefined;
         return runTask(
           work,
-          name != null && name !== "" ? { name } : {},
+          name && name !== "" ? { name } : {},
         );
       };
       await callback({ run });

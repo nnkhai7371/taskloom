@@ -8,6 +8,18 @@ import { hasCurrentScope, registerScopeTask } from "./scope.js";
 import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
 
 /**
+ * Discriminated union for why a task was canceled. Handlers can narrow on `reason.type`.
+ * The system sets one of these when it triggers cancellation; user-provided reasons may be passed through as-is.
+ *
+ * @see {@link Task.onCancel}
+ */
+export type CancelReason =
+  | { type: "timeout"; ms: number }
+  | { type: "user-abort"; signal: AbortSignal }
+  | { type: "scope-closed" }
+  | { type: "parent-canceled"; parent: Task<unknown> };
+
+/**
  * Optional callbacks invoked at task lifecycle points. All callbacks are optional.
  * Used for observability (e.g. metrics, APM). Hook errors are swallowed and do not affect task outcome.
  * @see {@link RunTaskOptions.lifecycleHooks}
@@ -41,8 +53,8 @@ export type Task<T = unknown> = {
   readonly error?: unknown;
   /** Optional name for debugging and strict-cancellation warnings. */
   readonly name?: string;
-  /** Registers a handler to run when the task is canceled. The handler receives the cancellation reason (e.g. from scope.abort(reason)). */
-  onCancel(handler: (reason?: unknown) => void): void;
+  /** Registers a handler to run when the task is canceled. The handler receives the cancellation reason (e.g. from scope.abort(reason)); when the system sets it, reason is a {@link CancelReason}. */
+  onCancel(handler: (reason?: CancelReason) => void): void;
 } & PromiseLike<T>;
 
 /**
@@ -54,7 +66,26 @@ export type RunTaskOptions = {
   name?: string;
   /** Optional lifecycle hooks (single or array). Invoked at task start, complete, fail, and cancel. */
   lifecycleHooks?: TaskLifecycleHook | TaskLifecycleHook[];
+  /** When set and signal aborts, the cancellation reason is reported as parent-canceled with this task. Omit when the parent is a scope (not a task). */
+  parentTask?: Task<unknown>;
 };
+
+function normalizeLifecycleHooks(
+  hooksOpt?: TaskLifecycleHook | TaskLifecycleHook[],
+): TaskLifecycleHook[] {
+  if (!hooksOpt) return [];
+  return Array.isArray(hooksOpt) ? hooksOpt : [hooksOpt];
+}
+
+function invokeHooks(hooks: TaskLifecycleHook[], fn: (h: TaskLifecycleHook) => void): void {
+  for (const h of hooks) {
+    try {
+      fn(h);
+    } catch {
+      // Hook errors do not affect task outcome
+    }
+  }
+}
 
 /**
  * Creates and runs a Task from async work. The work receives the task's AbortSignal for cancellation.
@@ -77,17 +108,12 @@ export function runTask<T>(
   const signal = controller.signal;
   const taskName = options?.name;
   const debugTaskId = registerTask(taskName);
-  const hooks: TaskLifecycleHook[] =
-    options?.lifecycleHooks != null
-      ? Array.isArray(options.lifecycleHooks)
-        ? options.lifecycleHooks
-        : [options.lifecycleHooks]
-      : [];
+  const hooks = normalizeLifecycleHooks(options?.lifecycleHooks);
 
   let status: TaskStatus = "running";
   let result: T | undefined;
   let error: unknown;
-  const cancelHandlers: Array<(reason?: unknown) => void> = [];
+  const cancelHandlers: Array<(reason?: CancelReason) => void> = [];
   let resolveThenable!: (value: T) => void;
   let rejectThenable!: (reason: unknown) => void;
   const thenablePromise = new Promise<T>((resolve, reject) => {
@@ -98,7 +124,7 @@ export function runTask<T>(
   let taskObject!: Task<T>;
 
   function withName(reason: unknown): unknown {
-    if (taskName != null && reason !== null && typeof reason === "object") {
+    if (taskName && reason && typeof reason === "object") {
       (reason as { taskName?: string }).taskName = taskName;
     }
     return reason;
@@ -106,25 +132,18 @@ export function runTask<T>(
 
   function transitionToCanceled(reason: unknown): void {
     if (status !== "running") return;
-    for (const h of hooks) {
-      try {
-        h.onTaskCancel?.(taskObject, reason);
-      } catch {
-        // Hook errors do not affect task outcome
-      }
-    }
+    invokeHooks(hooks, (h) => h.onTaskCancel?.(taskObject, reason));
     status = "canceled";
     updateTask(debugTaskId, "canceled");
     error = reason;
     if (isStrictModeEnabled() && cancelHandlers.length === 0) {
-      const name = taskName ?? "anonymous";
       strictModeWarn(
-        `Strict mode: task "${name}" was canceled but had no onCancel handler registered (ignored cancellation).`,
+        `Strict mode: task "${taskName ?? "anonymous"}" was canceled but had no onCancel handler registered (ignored cancellation).`,
       );
     }
     for (const h of cancelHandlers) {
       try {
-        h(reason);
+        h(reason as CancelReason | undefined);
       } catch {
         // Run remaining handlers; design: one throwing handler does not stop others
       }
@@ -135,13 +154,7 @@ export function runTask<T>(
   function transitionToCompleted(value: T): void {
     if (status !== "running") return;
     const duration = performance.now() - startTime;
-    for (const h of hooks) {
-      try {
-        h.onTaskComplete?.(taskObject, duration);
-      } catch {
-        // Hook errors do not affect task outcome
-      }
-    }
+    invokeHooks(hooks, (h) => h.onTaskComplete?.(taskObject, duration));
     status = "completed";
     updateTask(debugTaskId, "completed");
     result = value;
@@ -151,13 +164,7 @@ export function runTask<T>(
   function transitionToFailed(reason: unknown): void {
     if (status !== "running") return;
     const duration = performance.now() - startTime;
-    for (const h of hooks) {
-      try {
-        h.onTaskFail?.(taskObject, reason, duration);
-      } catch {
-        // Hook errors do not affect task outcome
-      }
-    }
+    invokeHooks(hooks, (h) => h.onTaskFail?.(taskObject, reason, duration));
     status = "failed";
     updateTask(debugTaskId, "failed");
     error = reason;
@@ -182,10 +189,10 @@ export function runTask<T>(
       get name() {
         return taskName;
       },
-      onCancel(handler: (reason?: unknown) => void): void {
+      onCancel(handler: (reason?: CancelReason) => void): void {
         if (status === "canceled") {
           try {
-            handler(error);
+            handler(error as CancelReason | undefined);
           } catch {
             // Invoke handler once; ignore errors per onCancel semantics
           }
@@ -204,36 +211,34 @@ export function runTask<T>(
   }
 
   let workPromise: Promise<unknown> | undefined;
-  if (options?.signal) {
-    if (options.signal.aborted) {
-      taskObject = makeTaskObject();
-      workPromise = undefined;
-      for (const h of hooks) {
-        try {
-          h.onTaskCancel?.(taskObject, options.signal.reason);
-        } catch {
-          // Hook errors do not affect task outcome
-        }
-      }
-      transitionToCanceled(options.signal.reason);
-      registerScopeTask(options?.signal, taskObject, workPromise);
-      return taskObject;
-    }
-    const parentSignal = options.signal;
+  const parentSignal = options?.signal;
+  if (parentSignal?.aborted) {
+    taskObject = makeTaskObject();
+    workPromise = undefined;
+    const parentTask = options?.parentTask;
+    const reason: CancelReason =
+      parentTask 
+        ? { type: "parent-canceled", parent: parentTask }
+        : (parentSignal.reason as CancelReason);
+    invokeHooks(hooks, (h) => h.onTaskCancel?.(taskObject, reason));
+    transitionToCanceled(reason);
+    registerScopeTask(parentSignal, taskObject, workPromise);
+    return taskObject;
+  }
+  if (parentSignal) {
+    const parentTask = options?.parentTask;
     parentSignal.addEventListener("abort", () => {
-      controller.abort(parentSignal.reason);
+      const reason: CancelReason =
+        parentTask 
+          ? { type: "parent-canceled", parent: parentTask }
+          : (parentSignal.reason as CancelReason);
+      controller.abort(reason);
     });
   }
 
   startTime = performance.now();
   taskObject = makeTaskObject();
-  for (const h of hooks) {
-    try {
-      h.onTaskStart?.(taskObject);
-    } catch {
-      // Hook errors do not affect task outcome
-    }
-  }
+  invokeHooks(hooks, (h) => h.onTaskStart?.(taskObject));
   workPromise = work(signal).then(
     (value) => transitionToCompleted(value),
     (reason) => transitionToFailed(reason),

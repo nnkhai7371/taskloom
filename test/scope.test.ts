@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { runInScope, runTask, withStrictCancellation, type Task } from "taskloom";
+import { runInScope, runTask, withStrictCancellation, type Task, type CancelReason } from "taskloom";
 
 describe("runInScope", () => {
   it("runs callback with scope and returns the callback result", async () => {
@@ -27,7 +27,7 @@ describe("runInScope", () => {
       return "done";
     });
     expect(childTask!.status).toBe("canceled");
-    await expect(childTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(childTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("rejects when callback throws", async () => {
@@ -57,7 +57,7 @@ describe("scope and child tasks", () => {
       return "done";
     });
     expect(childTask!.status).toBe("canceled");
-    await expect(childTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(childTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("failing scope (callback throws) cancels child task; assert task canceled and await rejects with cancellation error", async () => {
@@ -79,7 +79,7 @@ describe("scope and child tasks", () => {
       }),
     ).rejects.toBe(err);
     expect(childTask!.status).toBe("canceled");
-    await expect(childTask!).rejects.toMatchObject({ name: "AbortError" });
+    await expect(childTask!).rejects.toMatchObject({ type: "scope-closed" });
   });
 
   it("onCancel handler on a scope-child task is invoked when scope closes (success or failure)", async () => {
@@ -100,6 +100,55 @@ describe("scope and child tasks", () => {
       return "ok";
     });
     expect(order).toEqual(["onCancel", "rejected"]);
+  });
+
+  it("onCancel receives scope-closed variant when scope closes", async () => {
+    let receivedReason: CancelReason | undefined;
+    await runInScope(async (scope) => {
+      const child = runTask(
+        async (signal) => {
+          await new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        },
+        { signal: scope.signal },
+      );
+      child.onCancel((r) => {
+        receivedReason = r;
+      });
+      child.then(undefined, () => {});
+      return "ok";
+    });
+    expect(receivedReason).toBeDefined();
+    expect(receivedReason).toMatchObject({ type: "scope-closed" });
+  });
+
+  it("onCancel receives user-abort variant when scope.abort() is called with no argument", async () => {
+    let receivedReason: CancelReason | undefined;
+    let scopeSignal: AbortSignal;
+    await runInScope(async (scope) => {
+      scopeSignal = scope.signal;
+      const child = runTask(
+        async (signal) => {
+          await new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        },
+        { signal: scope.signal },
+      );
+      child.onCancel((r) => {
+        receivedReason = r;
+      });
+      scope.abort();
+      await child.then(undefined, () => {});
+    });
+    expect(receivedReason).toBeDefined();
+    expect(receivedReason).toMatchObject({ type: "user-abort" });
+    expect((receivedReason as { type: "user-abort"; signal: AbortSignal }).signal).toBe(scopeSignal!);
   });
 
   it("onCancel handler on scope-child task is invoked when scope closes with failure", async () => {

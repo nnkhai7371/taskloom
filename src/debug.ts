@@ -119,7 +119,7 @@ export class TaskloomDebugger {
     const node = this.#mirrorTaskById.get(event.taskId);
     if (node) {
       node.status = event.status;
-      if (event.timing?.endTime != null) node.endTime = event.timing.endTime;
+      if (event.timing?.endTime) node.endTime = event.timing.endTime;
     }
     if (this.#detachedRoot && this.#allTasksComplete(this.#detachedRoot)) return "print";
     return "return";
@@ -196,7 +196,7 @@ export class TaskloomDebugger {
         const namePart =
           child.name && !this.#isInternalTaskName(child.name) ? ` ${child.name}` : "";
         const duration =
-          child.endTime == null ? "" : ` in ${child.endTime - child.startTime}ms`;
+          child.endTime ? ` in ${child.endTime - child.startTime}ms` : "";
         lines.push(prefix + branch + `task#${child.id}${namePart} (${child.status}${duration})`);
       } else {
         const childStr = this.#formatMirrorTree(child, subPrefix);
@@ -225,7 +225,7 @@ export class TaskloomDebugger {
     const namePart =
       task.name && !this.#isInternalTaskName(task.name) ? ` ${task.name}` : "";
     const duration =
-      task.endTime == null ? "" : ` in ${task.endTime - task.startTime}ms`;
+      task.endTime ? ` in ${task.endTime - task.startTime}ms` : "";
     return `task#${task.id}${namePart} (${task.status}${duration})`;
   }
 

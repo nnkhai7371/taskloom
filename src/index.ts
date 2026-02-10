@@ -8,6 +8,7 @@ export {
   type TaskStatus,
   type RunTaskOptions,
   type TaskLifecycleHook,
+  type CancelReason,
 } from "./task.js";
 export {
   runInScope,
