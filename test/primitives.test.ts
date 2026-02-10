@@ -266,6 +266,12 @@ describe("race", () => {
       expect(t.status).toBe("canceled");
     }
   });
+
+  it("throws when callback does not start any tasks", async () => {
+    await expect(race(async () => {})).rejects.toThrow(
+      "race: callback did not start any tasks",
+    );
+  });
 });
 
 describe("rush (zero-friction run)", () => {
@@ -305,6 +311,12 @@ describe("rush", () => {
     });
     expect(value).toBe(2);
     expect(order).toEqual([2, 1]);
+  });
+
+  it("throws when callback does not start any tasks", async () => {
+    await expect(rush(async () => {})).rejects.toThrow(
+      "rush: callback did not start any tasks",
+    );
   });
 
   it("does not cancel other tasks on first completion", async () => {

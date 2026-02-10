@@ -44,6 +44,7 @@ export type ScopeLike = { readonly signal: AbortSignal; abort(): void };
 /**
  * Runs async work with a time limit. If work completes within `ms`, returns its result.
  * If the limit elapses first, aborts the scope (canceling all scope-bound children) and rejects with a TimeoutError.
+ * Timer is always cleared (on completion, timeout, or signal abort) to avoid leaking the sleep listener.
  * @param ms - Time limit in milliseconds
  * @param work - Async work to run
  * @param scope - Scope to abort on timeout (cancels children)
@@ -58,12 +59,26 @@ export async function runWithTimeout<T>(
 ): Promise<T> {
   const timeoutError = new Error(`Timeout after ${ms} ms`);
   (timeoutError as { name?: string }).name = "TimeoutError";
-  const timeoutPromise = sleep(ms, signal).then(() => {
-    scope.abort();
-    throw timeoutError;
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined = undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      scope.abort();
+      reject(timeoutError);
+    }, ms);
   });
-  const workPromise = work();
-  return Promise.race([workPromise, timeoutPromise]);
+
+  const onAbort = (): void => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  };
+  signal.addEventListener("abort", onAbort);
+
+  try {
+    return await Promise.race([work(), timeoutPromise]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 /**

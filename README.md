@@ -117,7 +117,7 @@ const [a, b] = await sync(async ({ run }) => {
 
 ### race - "First result wins; cancel the rest"
 
-Resolves or rejects with the **first** task to settle. As soon as one task settles, the scope is aborted so every other task is canceled.
+Resolves or rejects with the **first** task to settle. As soon as one task settles, the scope is aborted so every other task is canceled. The callback **must start at least one task** (via `run(work)` or `task(work)`); otherwise `race` throws.
 
 **Before:** `Promise.race` returns the first result, but the "losers" keep running.
 
@@ -136,7 +136,7 @@ const first = await race(async ({ run }) => {
 
 ### rush - "First result back, wait for all (no orphans)"
 
-Returns as soon as the **first** task settles, but the scope stays open until **every** started task has settled. Other tasks are **not** canceled; you get the first result and no orphan work.
+Returns as soon as the **first** task settles, but the scope stays open until **every** started task has settled. Other tasks are **not** canceled; you get the first result and no orphan work. The callback **must start at least one task** (via `run(work)` or `task(work)`); otherwise `rush` throws.
 
 ```js
 import { rush } from "taskloom";
@@ -261,12 +261,13 @@ When debug is enabled, the task tree can show scope IDs, task IDs, optional name
 
 ## Strict mode
 
-- **`enableStrictMode(options?)`** - Opt-in strict concurrency checks. When enabled, the library can warn about:
+- **`enableStrictMode(options?)`** - Opt-in strict concurrency checks. When enabled, the library **throws** `StrictModeError` when it detects:
   - **Unstructured async** - Async work started outside any Taskloom scope (e.g. not under `runInScope` or a primitive).
   - **Ignored cancellation** - A task is canceled but had no observable cancellation handling (e.g. no `onCancel`, signal not passed).
   - **Orphan tasks** - A scope exits while a task created under that scope is still running.
+  - **Branch without parent** - `branch()` is used without a parent scope (e.g. not inside `runInScope` or another primitive).
 
-Strict mode **does not** change success/failure or cancellation behavior; it only adds optional warnings. Off by default. Options (e.g. `StrictModeOptions`) can customize the warning handler (e.g. `onWarn`).
+When strict mode is off, no checks run and behavior is unchanged. Options (e.g. `StrictModeOptions`) can provide `onWarn(message)` to be called with the violation message before the throw (e.g. for logging or tests). Import `StrictModeError` from `"taskloom"` to catch or assert on it.
 
 ---
 
@@ -286,7 +287,7 @@ Strict mode **does not** change success/failure or cancellation behavior; it onl
 
 **Debug:** `enableTaskDebug`, `subscribeTaskDebug`, `TaskDebugEvent`
 
-**Strict:** `enableStrictMode`, `StrictModeOptions`, `withStrictCancellation`, `StrictCancellationOptions`
+**Strict:** `enableStrictMode`, `StrictModeError`, `StrictModeOptions`, `withStrictCancellation`, `StrictCancellationOptions`
 
 **Helpers (types):** `RetryOptions`, `RetryBackoff`
 

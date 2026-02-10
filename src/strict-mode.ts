@@ -1,28 +1,40 @@
 /**
- * Strict concurrency mode – opt-in warnings for unstructured async,
- * ignored cancellation, and tasks surviving scope exit.
+ * Strict concurrency mode – opt-in checks that throw when misuse is detected:
+ * unstructured async, ignored cancellation, and tasks surviving scope exit.
  */
 
 let strictModeEnabled = false;
 let onWarnCallback: ((message: string) => void) | undefined;
 
 /**
+ * Error thrown when strict mode is enabled and misuse is detected (unstructured async,
+ * ignored cancellation, orphan tasks, or branch without parent scope).
+ */
+export class StrictModeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StrictModeError";
+    Object.setPrototypeOf(this, StrictModeError.prototype);
+  }
+}
+
+/**
  * Options for {@link enableStrictMode}. When `onWarn` is provided, it is called
- * for each strict-mode warning instead of `console.warn`, so tests or loggers can capture warnings.
+ * with the message before throwing, so tests or loggers can capture the violation.
  */
 export type StrictModeOptions = {
-  /** When provided, called for each warning instead of `console.warn`. */
+  /** When provided, called with the violation message before the library throws. */
   onWarn?: (message: string) => void;
 };
 
 /**
  * Enables opt-in strict concurrency checks for the process. When enabled, the library
- * emits warnings for detectable misuse: async work started outside any scope (unstructured async),
- * tasks canceled without cancellation handling (e.g. no `onCancel`), and tasks still running
- * when their scope exits (orphans). When not enabled, no strict-mode checks run and behavior
- * is unchanged. Call once at startup or in tests; does not change runtime semantics beyond warnings.
+ * throws {@link StrictModeError} for detectable misuse: async work started outside any scope (unstructured async),
+ * tasks canceled without cancellation handling (e.g. no `onCancel`), tasks still running
+ * when their scope exits (orphans), or branch used without a parent scope. When not enabled,
+ * no strict-mode checks run and behavior is unchanged. Call once at startup or in tests.
  *
- * @param options - Optional. Use `onWarn` to capture warnings in tests or send to a logger instead of `console.warn`.
+ * @param options - Optional. Use `onWarn` to capture the violation message before the throw (e.g. for logging or tests).
  */
 export function enableStrictMode(options?: StrictModeOptions): void {
   strictModeEnabled = true;
@@ -44,7 +56,7 @@ export function isStrictModeEnabled(): boolean {
 }
 
 /**
- * Emits a strict-mode warning: calls the configured onWarn callback if set, otherwise console.warn.
+ * When strict mode is on, calls onWarn (if set) then throws {@link StrictModeError} with the message.
  * No-op when strict mode is off. Used internally when misuse is detected.
  * @internal
  */
@@ -55,4 +67,5 @@ export function strictModeWarn(message: string): void {
   } else {
     console.warn(message);
   }
+  throw new StrictModeError(message);
 }

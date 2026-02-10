@@ -54,6 +54,12 @@ export type ZeroFrictionSyncContext = {
  */
 export type ZeroFrictionSyncCallback<R = void> = (ctx: ZeroFrictionSyncContext) => Promise<R>;
 
+/** Attach a no-op rejection handler so unawaited task promises never cause unhandledRejection. */
+function attachRejectionHandler<T>(t: Task<T>): Task<T> {
+  t.then(undefined, () => {});
+  return t;
+}
+
 function taskImpl<T>(
   scope: Scope,
   first: string | ((signal: AbortSignal) => Promise<T>),
@@ -71,6 +77,7 @@ function makeRun(scope: Scope, tasks: Task<unknown>[]): ZeroFrictionSyncContext[
       name != null && name !== ""
         ? taskImpl(scope, name, work)
         : taskImpl(scope, work);
+    attachRejectionHandler(t);
     tasks.push(t);
     return t;
   };
@@ -119,6 +126,7 @@ function createSyncContext(scope: Scope): { tasks: Task<unknown>[]; ctx: SyncCon
     second?: (signal: AbortSignal) => Promise<unknown>,
   ) => {
     const t = taskImpl(scope, first, second);
+    attachRejectionHandler(t);
     tasks.push(t);
     return t;
   };
@@ -204,6 +212,9 @@ export function race<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
       const { tasks, ctx } = createSyncContext(scope);
       return await runWithScopeStorage(store, async () => {
         await callback(ctx);
+        if (tasks.length === 0) {
+          throw new Error("race: callback did not start any tasks");
+        }
         return Promise.race(tasks).then(
           (value) => {
             warnOrphanTasksIfStrict(entries);
@@ -237,6 +248,9 @@ export function rush<T>(callback: (ctx: SyncContext) => Promise<unknown>): Promi
       try {
         const { tasks, ctx } = createSyncContext(scope);
         await callback(ctx);
+        if (tasks.length === 0) {
+          throw new Error("rush: callback did not start any tasks");
+        }
         try {
           return (await Promise.race(tasks)) as T;
         } finally {

@@ -24,7 +24,14 @@ export type ScopeTaskEntry = {
 };
 
 /** @internal */
-export type ScopeStorage = { scope: Scope; entries: ScopeTaskEntry[] };
+export type ScopeStorage = {
+  scope: Scope;
+  entries: ScopeTaskEntry[];
+  /** Used by withStrictCancellation: timer to warn if tasks ignore cancellation. Cleared when all work settles. */
+  strictTimerId?: ReturnType<typeof setTimeout>;
+  /** Used by withStrictCancellation: work promises so we can clear the timer when all settle. */
+  pendingWorkPromises?: Promise<unknown>[];
+};
 
 const scopeStorage = new AsyncLocalStorage<ScopeStorage>();
 
@@ -81,6 +88,7 @@ export function registerScopeTask(
     const entry: ScopeTaskEntry = { task, workSettled: false };
     store.entries.push(entry);
     if (workPromise) {
+      store.pendingWorkPromises?.push(workPromise);
       workPromise.finally(() => {
         entry.workSettled = true;
       });
@@ -167,16 +175,18 @@ export async function withStrictCancellation<T>(
 ): Promise<T> {
   const { scope, controller } = createScope();
   const entries: ScopeTaskEntry[] = [];
+  const pendingWorkPromises: Promise<unknown>[] = [];
   const warnAfterMs = options?.warnAfterMs ?? DEFAULT_WARN_AFTER_MS;
+  const store: ScopeStorage = { scope, entries, pendingWorkPromises };
 
-  return await scopeStorage.run({ scope, entries }, async () => {
+  return await scopeStorage.run(store, async () => {
     try {
       return await fn(scope);
     } finally {
       controller.abort(undefined);
       if (process.env.NODE_ENV !== "production") {
         const abortedAt = Date.now();
-        setTimeout(() => {
+        const timerId = setTimeout(() => {
           for (const entry of entries) {
             if (!entry.workSettled) {
               const name = entry.task.name ?? "anonymous";
@@ -187,6 +197,11 @@ export async function withStrictCancellation<T>(
             }
           }
         }, warnAfterMs);
+        store.strictTimerId = timerId;
+        Promise.allSettled(pendingWorkPromises).then(() => {
+          clearTimeout(timerId);
+          store.strictTimerId = undefined;
+        });
       }
     }
   });

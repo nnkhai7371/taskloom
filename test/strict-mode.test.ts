@@ -1,10 +1,11 @@
 /**
- * Strict concurrency mode tests: off by default, warnings for unstructured async,
- * ignored cancellation, and orphans; same outcome with strict mode on when no misuse.
+ * Strict concurrency mode tests: off by default, throws when strict mode on and misuse detected;
+ * same outcome with strict mode on when no misuse.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   enableStrictMode,
+  StrictModeError,
   runTask,
   runInScope,
   sync,
@@ -58,57 +59,53 @@ describe("strict mode off by default", () => {
 });
 
 describe("after enableStrictMode()", () => {
-  it("emits warning for unstructured async when runTask is called outside scope", async () => {
+  it("throws for unstructured async when runTask is called outside scope", () => {
     const warnings: string[] = [];
     enableStrictMode({ onWarn: (msg) => warnings.push(msg) });
-    const task = runTask(async () => 1);
-    await task;
+    expect(() => runTask(async () => 1)).toThrow(StrictModeError);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/unstructured async|outside any Taskloom scope/i);
   });
 
-  it("emits warning when task is canceled with no onCancel registered", async () => {
-    const warnings: string[] = [];
-    enableStrictMode({ onWarn: (msg) => warnings.push(msg) });
-    await runInScope(async (scope) => {
-      const t = runTask(
-        async (signal) => {
-          await new Promise<never>((_, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason), {
-              once: true,
+  it("throws when task is canceled with no onCancel registered", async () => {
+    enableStrictMode();
+    await expect(
+      runInScope(async (scope) => {
+        const t = runTask(
+          async (signal) => {
+            await new Promise<never>((_, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), {
+                once: true,
+              });
             });
-          });
-        },
-        { signal: scope.signal },
-      );
-      t.then(undefined, () => {}); // avoid unhandled rejection when scope aborts
-    });
-    expect(warnings.length).toBeGreaterThanOrEqual(1);
-    expect(warnings.some((w) => /canceled|onCancel|ignored cancellation/i.test(w))).toBe(true);
+          },
+          { signal: scope.signal },
+        );
+        t.then(undefined, () => {}); // avoid unhandled rejection when scope aborts
+      }),
+    ).rejects.toThrow(StrictModeError);
   });
 
-  it("emits warning when scope exits with tasks still running (orphan)", async () => {
-    const warnings: string[] = [];
-    enableStrictMode({ onWarn: (msg) => warnings.push(msg) });
-    await runInScope(async (scope) => {
-      const t = runTask(
-        async () => {
-          await new Promise(() => {}); // never settles
-        },
-        { signal: scope.signal },
-      );
-      t.then(undefined, () => {}); // avoid unhandled rejection when scope aborts
-    });
-    expect(warnings.length).toBeGreaterThanOrEqual(1);
-    expect(warnings.some((w) => /orphan|survived scope exit/i.test(w))).toBe(true);
+  it("throws when scope exits with tasks still running (orphan)", async () => {
+    enableStrictMode();
+    await expect(
+      runInScope(async (scope) => {
+        const t = runTask(
+          async () => {
+            await new Promise(() => {}); // never settles
+          },
+          { signal: scope.signal },
+        );
+        t.then(undefined, () => {}); // avoid unhandled rejection when scope aborts
+      }),
+    ).rejects.toThrow(StrictModeError);
   });
 
-  it("uses onWarn callback instead of console.warn when provided", async () => {
+  it("calls onWarn before throwing when provided", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const captured: string[] = [];
     enableStrictMode({ onWarn: (msg) => captured.push(msg) });
-    const task = runTask(async () => 1);
-    await task;
+    expect(() => runTask(async () => 1)).toThrow(StrictModeError);
     expect(captured.length).toBeGreaterThanOrEqual(1);
     expect(warnSpy).not.toHaveBeenCalled();
   });
