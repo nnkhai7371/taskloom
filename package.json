@@ -1,7 +1,7 @@
 {
   "name": "taskloom",
   "version": "0.1.0",
-  "description": "Task-based structured concurrency primitives for Node.js",
+  "description": "Task-based structured concurrency primitives for Node.js and browser",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -12,6 +12,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "browser": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },

@@ -304,7 +304,12 @@ export class TaskloomDebugger {
   }
 
   getCallerName(depth: number = 1): string | undefined {
-    const stack = new Error("stack capture for getCallerName").stack;
+    let stack: string | undefined;
+    try {
+      stack = new Error("stack capture for getCallerName").stack;
+    } catch {
+      return undefined;
+    }
     if (!stack || typeof stack !== "string") return undefined;
     const lines = stack.split("\n");
     const frameIndex = 1 + depth;
@@ -408,7 +413,11 @@ export const taskloomDebugger = defaultDebugger;
  *   logger.debug / logger.error instead of console.
  */
 export function enableTaskDebug(logger?: Logger): void {
-  defaultDebugger.enable(logger);
+  try {
+    defaultDebugger.enable(logger);
+  } catch {
+    // Graceful degradation: when stack or debug APIs are unavailable (e.g. in some browsers), no-op
+  }
 }
 
 /** Internal use for tests only; not part of public API. */
@@ -425,7 +434,11 @@ export function isTaskDebugEnabled(): boolean {
 }
 
 export function getCallerName(depth: number = 1): string | undefined {
-  return defaultDebugger.getCallerName(depth);
+  try {
+    return defaultDebugger.getCallerName(depth);
+  } catch {
+    return undefined;
+  }
 }
 
 export function pushScope(type: ScopeType): void {

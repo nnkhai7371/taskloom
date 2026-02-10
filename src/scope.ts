@@ -3,7 +3,7 @@
  * scope.signal are canceled when the scope is closed (e.g. when runInScope exits).
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
+import { storage, type AsyncContextStorage } from "./async-context.js";
 import type { Task } from "./task.js";
 import { isStrictModeEnabled, strictModeWarn } from "./strict-mode.js";
 
@@ -33,7 +33,7 @@ export type ScopeStorage = {
   pendingWorkPromises?: Promise<unknown>[];
 };
 
-const scopeStorage = new AsyncLocalStorage<ScopeStorage>();
+const scopeStorage = storage as AsyncContextStorage<ScopeStorage>;
 
 /**
  * Returns whether the current execution is inside an active Taskloom scope (runInScope or a primitive).

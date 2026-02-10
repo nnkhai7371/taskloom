@@ -117,6 +117,15 @@ describe("enableTaskDebug public API", () => {
   it("is importable from taskloom barrel", () => {
     expect(typeof enableTaskDebug).toBe("function");
   });
+
+  it("enableTaskDebug() does not throw when stack or debug API is unavailable", () => {
+    expect(() => enableTaskDebug()).not.toThrow();
+  });
+
+  it("enableTaskDebug(logger) does not throw when stack or debug API is unavailable", () => {
+    const logger = { debug: () => {}, warn: () => {}, error: () => {} };
+    expect(() => enableTaskDebug(logger)).not.toThrow();
+  });
 });
 
 describe("public API uses default instance", () => {

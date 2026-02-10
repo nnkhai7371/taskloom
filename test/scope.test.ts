@@ -12,6 +12,24 @@ describe("runInScope", () => {
     expect(value).toBe(42);
   });
 
+  it("preserves scope across await boundaries (async context run/getStore semantics)", async () => {
+    let childTask: Task<void>;
+    await runInScope(async (scope) => {
+      await Promise.resolve(); // await boundary; scope must still be visible after
+      childTask = runTask(
+        async (signal) => {
+          await new Promise<never>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        { signal: scope.signal },
+      );
+      return "done";
+    });
+    expect(childTask!.status).toBe("canceled");
+    await expect(childTask!).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("rejects when callback throws", async () => {
     const err = new Error("callback failed");
     await expect(
@@ -128,6 +146,28 @@ describe("scope and child tasks", () => {
       await child.then(undefined, () => {});
     });
     expect(seenReason).toBe(reason);
+  });
+
+  it("nested runInScope: inner scope aborts with outer; task registration and abort work", async () => {
+    const order: string[] = [];
+    await runInScope(async (outerScope) => {
+      await runInScope(async (innerScope) => {
+        const innerTask = runTask(
+          async (signal) => {
+            await new Promise<never>((_, reject) => {
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            });
+          },
+          { signal: innerScope.signal },
+        );
+        innerTask.onCancel(() => order.push("innerCancel"));
+        innerTask.then(undefined, () => order.push("innerRejected"));
+        innerScope.abort("inner");
+        await innerTask.then(undefined, () => {});
+      });
+      order.push("outerDone");
+    });
+    expect(order).toEqual(["innerCancel", "innerRejected", "outerDone"]);
   });
 
   it("runTask parent abort propagates reason to child onCancel", async () => {
